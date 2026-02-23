@@ -1,0 +1,16 @@
+# Core configuration for the Snakemake prototype.
+# Update these paths on the cluster before running.
+
+marker_dir: "results/markers"
+
+datasets_file: "datasets.txt"
+
+paths:
+  assembly_fastq: "/path/to/long_reads.fastq"
+
+scripts:
+  find_data_sra: "0.find_data_sra.py"
+  assemblies: "1.assemblies.sh"
+  call_svs: "2.call_SVs_and_filter.sh"
+  make_cactus_graph: "3.make_cactus_graph.sh"
+  align_wgs: "4.align_wgs.sh"
