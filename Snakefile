@@ -95,7 +95,7 @@ GATK_CFG = VC_CFG["gatk"]
 VG_CFG = VC_CFG["vg"]
 VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
 GATK_THREADS = GATK_CFG.get("threads", 4)
-VG_XG = VG_CFG.get("graph_xg", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.xg"))
+VG_GBZ = VG_CFG.get("graph_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 VG_THREADS = VG_CFG.get("threads", 4)
 
 FST_CFG = config["fst_afs"]
@@ -157,12 +157,12 @@ rule all:
         expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
         METRICS_OUTDIR / "alignment_metrics.tsv",
         # Variant calling
-        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz", ref=REFERENCE_NAMES),
-        expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
+        expand(VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz", ref=REFERENCE_NAMES),
+        expand(VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
         # Population genetics
         expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=REFERENCE_NAMES),
         [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
@@ -187,6 +187,11 @@ rule assemble_and_qc:
         "envs/assembly.yaml"
     threads:
         ASSEMBLY_THREADS
+    resources:
+        partition="long",
+        runtime=1440,
+        mem_mb=32000,
+        cpus=ASSEMBLY_THREADS
     params:
         genome_size=ASSEMBLY_GENOME_SIZE,
         lineage=ASSEMBLY_LINEAGE
@@ -242,6 +247,11 @@ rule call_svs:
         "envs/sv_calling.yaml"
     threads:
         SV_THREADS
+    resources:
+        partition="long",
+        runtime=1440,
+        mem_mb=32000,
+        cpus=SV_THREADS
     params:
         script=SCRIPTS["call_svs"],
         reference=ALIGN_CONSPEC,
@@ -295,6 +305,11 @@ rule make_cactus_graph:
         CACTUS_IMAGE
     threads:
         CACTUS_MAX_CORES
+    resources:
+        partition="highmem",
+        runtime=2880,
+        mem_mb=128000,
+        cpus=CACTUS_MAX_CORES
     params:
         jobstore=CACTUS_JOBSTORE,
         outdir=CACTUS_OUTDIR,
@@ -347,11 +362,11 @@ rule align_wgs:
         fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
         fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
         augref=ALIGN_AUGREF,
-        augref_index=f"{ALIGN_AUGREF}.bwt",
+        augref_bwt=f"{ALIGN_AUGREF}.bwt",
         conspec=ALIGN_CONSPEC,
-        conspec_index=f"{ALIGN_CONSPEC}.bwt",
+        conspec_bwt=f"{ALIGN_CONSPEC}.bwt",
         hetspec=ALIGN_HETSPEC,
-        hetspec_index=f"{ALIGN_HETSPEC}.bwt",
+        hetspec_bwt=f"{ALIGN_HETSPEC}.bwt",
         cactus=ALIGN_CACTUS_GBZ
     output:
         augref_bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
@@ -365,6 +380,11 @@ rule align_wgs:
         "envs/align_wgs.yaml"
     threads:
         ALIGN_THREADS
+    resources:
+        partition="long",
+        runtime=960,
+        mem_mb=16000,
+        cpus=ALIGN_THREADS
     shell:
         r"""
         set -euo pipefail
@@ -395,6 +415,11 @@ rule align_metrics_per_bam:
         "envs/align_metrics.yaml"
     threads:
         METRICS_THREADS
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=METRICS_THREADS
     params:
         min_mapq=METRICS_MIN_MAPQ,
         min_baseq=METRICS_MIN_BASEQ
@@ -405,15 +430,15 @@ rule align_metrics_per_bam:
 
         total=$(samtools view -c -F 0x900 {input.bam})
         mapped=$(samtools view -c -F 0x904 {input.bam})
-        mean_mapq=$(samtools view -F 4 {input.bam} | awk '{sum+=$5; n++} END {if(n>0) printf "%.6f", sum/n; else print "0"}')
+        mean_mapq=$(samtools view -F 4 {input.bam} | awk '{{sum+=$5; n++}} END {{if(n>0) printf "%.6f", sum/n; else print "0"}}')
         mean_depth=$(samtools depth -a -q {params.min_mapq} -Q {params.min_baseq} {input.bam} | \
-            awk '{sum+=$3; n++} END {if (n>0) printf "%.6f", sum/n; else print "0"}')
-        map_rate=$(awk -v m="$mapped" -v t="$total" 'BEGIN {if (t>0) printf "%.6f", m/t; else print "0"}')
+            awk '{{sum+=$3; n++}} END {{if (n>0) printf "%.6f", sum/n; else print "0"}}')
+        map_rate=$(awk -v m="$mapped" -v t="$total" 'BEGIN {{if (t>0) printf "%.6f", m/t; else print "0"}}')
 
-        {
-            echo -e "sample\talignment_type\ttotal_reads\taligned_reads\tmapping_rate\tmean_mapq\tmean_depth";
-            echo -e "{wildcards.sample}\t{wildcards.ref}\t${total}\t${mapped}\t${map_rate}\t${mean_mapq}\t${mean_depth}";
-        } > {output}
+        cat > {output} << 'EOF'
+sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
+{wildcards.sample}	{wildcards.ref}	$total	$mapped	$map_rate	$mean_mapq	$mean_depth
+EOF
         """
 
 rule align_metrics_per_gam:
@@ -425,19 +450,24 @@ rule align_metrics_per_gam:
         "envs/align_metrics.yaml"
     threads:
         METRICS_THREADS
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=METRICS_THREADS
     shell:
         r"""
         set -euo pipefail
         mkdir -p {METRICS_OUTDIR}/{wildcards.sample}
 
         stats=$(vg stats -a {input.gam})
-        aligned_reads=$(echo "$stats" | awk '/Total aligned:/ {print $3}')
-        mean_mapq=$(echo "$stats" | awk -F'mean ' '/Mapping quality:/ {print $2}' | awk '{print $1}')
+        aligned_reads=$(echo "$stats" | awk '/Total aligned:/ {{print $3}}')
+        mean_mapq=$(echo "$stats" | awk -F'mean ' '/Mapping quality:/ {{print $2}}' | awk '{{print $1}}')
 
-        {
-            echo -e "sample\talignment_type\ttotal_reads\taligned_reads\tmapping_rate\tmean_mapq\tmean_depth";
-            echo -e "{wildcards.sample}\tcactus\tNA\t${aligned_reads}\tNA\t${mean_mapq}\tNA";
-        } > {output}
+        cat > {output} << 'EOF'
+sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
+{wildcards.sample}	cactus	NA	$aligned_reads	NA	$mean_mapq	NA
+EOF
         """
 
 rule align_metrics_summary:
@@ -448,6 +478,11 @@ rule align_metrics_summary:
         metrics=METRICS_OUTDIR / "alignment_metrics.tsv"
     conda:
         "envs/align_metrics.yaml"
+    resources:
+        partition="short",
+        runtime=60,
+        mem_mb=2000,
+        cpus=1
     run:
         from pathlib import Path
         
@@ -482,30 +517,82 @@ def _ref_lengths_path(wildcards):
         return ROH_GENOME_LENGTHS[wildcards.ref]
     return str(ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv")
 
-rule ref_fai:
+rule index_augref:
     input:
-        fasta=lambda wildcards: _gatk_ref_fasta(wildcards)
+        fasta=ALIGN_AUGREF
     output:
-        fai=lambda wildcards: _gatk_ref_fai(wildcards)
+        fai=f"{ALIGN_AUGREF}.fai",
+        dict=str(Path(ALIGN_AUGREF).with_suffix(".dict")),
+        bwt=f"{ALIGN_AUGREF}.bwt",
+        amb=f"{ALIGN_AUGREF}.amb",
+        ann=f"{ALIGN_AUGREF}.ann",
+        pac=f"{ALIGN_AUGREF}.pac",
+        sa=f"{ALIGN_AUGREF}.sa"
     conda:
-        "envs/gatk.yaml"
+        "envs/align_wgs.yaml"
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1
     shell:
         r"""
         set -euo pipefail
         samtools faidx {input.fasta}
+        gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
+        bwa index {input.fasta}
         """
 
-rule ref_dict:
+rule index_conspec:
     input:
-        fasta=lambda wildcards: _gatk_ref_fasta(wildcards)
+        fasta=ALIGN_CONSPEC
     output:
-        dict=lambda wildcards: _gatk_ref_dict(wildcards)
+        fai=f"{ALIGN_CONSPEC}.fai",
+        dict=str(Path(ALIGN_CONSPEC).with_suffix(".dict")),
+        bwt=f"{ALIGN_CONSPEC}.bwt",
+        amb=f"{ALIGN_CONSPEC}.amb",
+        ann=f"{ALIGN_CONSPEC}.ann",
+        pac=f"{ALIGN_CONSPEC}.pac",
+        sa=f"{ALIGN_CONSPEC}.sa"
     conda:
-        "envs/gatk.yaml"
+        "envs/align_wgs.yaml"
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1
     shell:
         r"""
         set -euo pipefail
+        samtools faidx {input.fasta}
         gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
+        bwa index {input.fasta}
+        """
+
+rule index_hetspec:
+    input:
+        fasta=ALIGN_HETSPEC
+    output:
+        fai=f"{ALIGN_HETSPEC}.fai",
+        dict=str(Path(ALIGN_HETSPEC).with_suffix(".dict")),
+        bwt=f"{ALIGN_HETSPEC}.bwt",
+        amb=f"{ALIGN_HETSPEC}.amb",
+        ann=f"{ALIGN_HETSPEC}.ann",
+        pac=f"{ALIGN_HETSPEC}.pac",
+        sa=f"{ALIGN_HETSPEC}.sa"
+    conda:
+        "envs/align_wgs.yaml"
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1
+    shell:
+        r"""
+        set -euo pipefail
+        samtools faidx {input.fasta}
+        gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
+        bwa index {input.fasta}
         """
 
 rule gatk_haplotypecaller:
@@ -516,16 +603,21 @@ rule gatk_haplotypecaller:
         fai=lambda wildcards: _gatk_ref_fai(wildcards),
         dict=lambda wildcards: _gatk_ref_dict(wildcards)
     output:
-        vcf=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi"
     conda:
         "envs/gatk.yaml"
     threads:
         GATK_THREADS
+    resources:
+        partition="short",
+        runtime=240,
+        mem_mb=8000,
+        cpus=GATK_THREADS
     shell:
         r"""
         set -euo pipefail
-        mkdir -p {VC_OUTDIR}/gatk/{wildcards.ref}
+        mkdir -p {VC_OUTDIR}/gatk/{wildcards.ref}/merged
         gatk HaplotypeCaller \
           -R {input.fasta} \
           -I {input.bam} \
@@ -536,7 +628,7 @@ rule gatk_haplotypecaller:
 rule vg_call:
     input:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
-        xg=VG_XG
+        gbz=VG_GBZ
     output:
         vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
@@ -544,46 +636,62 @@ rule vg_call:
         "envs/vg_call.yaml"
     threads:
         VG_THREADS
+    resources:
+        partition="long",
+        runtime=480,
+        mem_mb=16000,
+        cpus=VG_THREADS
     shell:
         r"""
         set -euo pipefail
         mkdir -p {VC_OUTDIR}/vg
         pack_tmp=$(mktemp --suffix=.pack)
-        vg pack -t {threads} -x {input.xg} -g {input.gam} -o "$pack_tmp"
-        vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} {input.xg} | bgzip -c > {output.vcf}
+        vg pack -t {threads} -Z {input.gbz} -g {input.gam} -o "$pack_tmp"
+        vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} {input.gbz} | bgzip -c > {output.vcf}
         tabix -p vcf {output.vcf}
         rm -f "$pack_tmp"
         """
 
 def _gatk_vcfs_for_ref(wildcards):
-    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz" for sample in SHORT_SAMPLES]
+    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/merged/{sample}.vcf.gz" for sample in SHORT_SAMPLES]
 
 rule merge_gatk_vcfs:
     input:
         vcfs=_gatk_vcfs_for_ref,
-        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz.tbi" for sample in SHORT_SAMPLES]
+        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/merged/{sample}.vcf.gz.tbi" for sample in SHORT_SAMPLES]
     output:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
     conda:
         "envs/fst_afs.yaml"
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
     shell:
         r"""
         set -euo pipefail
+        mkdir -p {VC_OUTDIR}/gatk/{wildcards.ref}/combined
         bcftools merge -m all -Oz -o {output.vcf} {input.vcfs}
         tabix -p vcf {output.vcf}
         """
 
 rule afs_per_ref:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
     output:
         afs=FST_OUTDIR / "afs/{ref}.afs.tsv"
     conda:
         "envs/fst_afs.yaml"
     params:
         bins=AFS_BINS
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
     run:
         from pathlib import Path
         import subprocess
@@ -631,8 +739,8 @@ rule afs_per_ref:
 
 rule fst_per_ref_pair:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
     output:
         FST_OUTDIR / "fst/{ref}/{pop1}_vs_{pop2}.weir.fst"
     conda:
@@ -641,6 +749,11 @@ rule fst_per_ref_pair:
         window_args=FST_WINDOW_ARGS,
         pop1_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop1]),
         pop2_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop2])
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
     shell:
         r"""
         set -euo pipefail
@@ -662,8 +775,8 @@ rule fst_per_ref_pair:
 
 rule pi_per_ref:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
     output:
         PI_OUTDIR / "{ref}.windowed.pi"
     conda:
@@ -671,6 +784,11 @@ rule pi_per_ref:
     params:
         window_size=PI_WINDOW_SIZE,
         window_step=PI_WINDOW_STEP
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
     shell:
         r"""
         set -euo pipefail
@@ -683,8 +801,8 @@ rule pi_per_ref:
 
 rule allelic_balance_per_sample:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi"
     output:
         summary=AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv",
         raw=AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv"
@@ -692,6 +810,11 @@ rule allelic_balance_per_sample:
         "envs/allelic_balance.yaml"
     params:
         bins=AB_BINS
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
     run:
         import statistics
         from pathlib import Path
@@ -764,6 +887,11 @@ rule allelic_balance_summary:
         summary=AB_OUTDIR / "allelic_balance_summary.tsv"
     conda:
         "envs/allelic_balance.yaml"
+    resources:
+        partition="short",
+        runtime=60,
+        mem_mb=2000,
+        cpus=1
     run:
         from pathlib import Path
         
@@ -781,9 +909,9 @@ rule allelic_balance_summary:
 
 rule roh_per_sample:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi",
-        lengths=_ref_lengths_path
+        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi",
+        lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv"
     output:
         roh=ROH_OUTDIR / "{ref}/{sample}.roh.tsv",
         froh=ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv"
@@ -792,6 +920,11 @@ rule roh_per_sample:
     params:
         autosomes=ROH_AUTOSOMES,
         bcftools_args=ROH_BCFTOOLS_ARGS
+    resources:
+        partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
     run:
         import subprocess
         from pathlib import Path
@@ -877,6 +1010,11 @@ rule roh_summary:
         summary=ROH_OUTDIR / "f_roh_summary.tsv"
     conda:
         "envs/roh.yaml"
+    resources:
+        partition="short",
+        runtime=60,
+        mem_mb=2000,
+        cpus=1
     run:
         from pathlib import Path
         
@@ -894,15 +1032,20 @@ rule roh_summary:
 
 rule ref_lengths:
     input:
-        fasta=_gatk_ref_fasta,
-        fai=_gatk_ref_fai
+        fasta=lambda wildcards: _gatk_ref_fasta(wildcards),
+        fai=lambda wildcards: _gatk_ref_fai(wildcards)
     output:
-        lengths=_ref_lengths_path
+        lengths=ROH_OUTDIR / "lengths" / "{ref}.lengths.tsv"
     conda:
         "envs/roh.yaml"
+    resources:
+        partition="short",
+        runtime=60,
+        mem_mb=2000,
+        cpus=1
     shell:
         r"""
         set -euo pipefail
         mkdir -p {ROH_OUTDIR}/lengths
-        awk -F '\t' 'BEGIN {OFS="\t"} {print $1,$2}' {input.fai} > {output.lengths}
+        awk -F '\t' 'BEGIN {{OFS="\t"}} {{print $1,$2}}' {input.fai} > {output.lengths}
         """

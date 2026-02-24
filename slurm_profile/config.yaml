@@ -1,0 +1,29 @@
+# SLURM Cluster Configuration
+# 
+# Partition assignment strategy:
+# - Default "short": Tasks <2 hours (most alignment, filtering, small analyses)
+# - Override to "long": Cactus graph, assembly, large SV calling (runtime: 360-1440 min)
+# - Override to "highmem": Memory-intensive tasks >16GB (cactus, assembly, large cohorts)
+#
+# In your Snakefile rules, add resources section:
+#   resources:
+#     partition="long",
+#     runtime=1440,      # minutes (24 hours for cactus)
+#     mem_mb=32000,      # GiB for memory-intensive tasks
+#     cpus=8             # cores for parallel rules
+
+cluster: "sbatch -t {resources.runtime} -c {resources.cpus} --mem={resources.mem_mb} -p {resources.partition} --output=logs/slurm_%j.log --error=logs/slurm_%j.err"
+default-resources:
+  cpus: 2
+  mem_mb: 8000
+  runtime: 120
+  partition: "short"
+
+latency-wait: 60
+jobs: 100
+max-jobs-per-second: 10
+max-status-checks-per-second: 1
+keep-going: true
+rerun-incomplete: true
+printshellcmds: true
+
