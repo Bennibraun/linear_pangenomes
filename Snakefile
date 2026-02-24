@@ -68,7 +68,6 @@ SV_FLANK = SV_CFG.get("flank", 200)
 
 CACTUS_CFG = config["cactus"]
 CACTUS_IMAGE = CACTUS_CFG["image"]
-CACTUS_BIND = CACTUS_CFG.get("bind", "")
 CACTUS_JOBSTORE = CACTUS_CFG.get("jobstore", "results/cactus_work")
 CACTUS_SEQFILE = Path("results") / "cactus_work" / "seqfile.txt"  # Auto-generated, not manual
 CACTUS_OUTDIR = Path(CACTUS_CFG.get("outdir", "results/cactus"))
@@ -294,8 +293,6 @@ rule make_cactus_graph:
         vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz"
     container:
         CACTUS_IMAGE
-    singularity_args:
-        CACTUS_BIND
     threads:
         CACTUS_MAX_CORES
     params:
@@ -448,32 +445,26 @@ rule align_metrics_summary:
         expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=METRICS_REF_TYPES),
         expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES)
     output:
-        METRICS_OUTDIR / "alignment_metrics.tsv"
+        metrics=METRICS_OUTDIR / "alignment_metrics.tsv"
     conda:
         "envs/align_metrics.yaml"
-    shell:
-        r"""
-        set -euo pipefail
-        python - <<'PY'
-from pathlib import Path
-
-inputs = {input}
-out_path = Path("{output}")
-rows = []
-header = None
-for path in inputs:
-    text = Path(path).read_text().strip().splitlines()
-    if not text:
-        continue
-    if header is None:
-        header = text[0]
-    if len(text) > 1:
-        rows.append(text[1])
-
-out_path.parent.mkdir(parents=True, exist_ok=True)
-out_path.write_text("\n".join([header] + rows) + "\n")
-PY
-        """
+    run:
+        from pathlib import Path
+        
+        out_path = Path(output.metrics)
+        rows = []
+        header = None
+        for path in input:
+            text = Path(path).read_text().strip().splitlines()
+            if not text:
+                continue
+            if header is None:
+                header = text[0]
+            if len(text) > 1:
+                rows.append(text[1])
+        
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("\n".join([header] + rows) + "\n")
 
 def _gatk_ref_fasta(wildcards):
     if wildcards.ref not in REFS_NESTED:
@@ -588,54 +579,55 @@ rule afs_per_ref:
         vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
         tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
     output:
-        FST_OUTDIR / "afs/{ref}.afs.tsv"
+        afs=FST_OUTDIR / "afs/{ref}.afs.tsv"
     conda:
         "envs/fst_afs.yaml"
     params:
         bins=AFS_BINS
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {FST_OUTDIR}/afs
-        freq_prefix=$(mktemp)
-        vcftools --gzvcf {input.vcf} --freq2 --out "$freq_prefix" > /dev/null
-
-        python - <<'PY'
-from pathlib import Path
-
-freq_path = Path("""{freq_prefix}.frq""")
-bins = {params.bins}
-counts = [0 for _ in range(len(bins) - 1)]
-
-for line in freq_path.read_text().strip().splitlines()[1:]:
-    parts = line.split()
-    if len(parts) < 6:
-        continue
-    freqs = []
-    for item in parts[5:]:
-        if ":" not in item:
-            continue
-        try:
-            freqs.append(float(item.split(":")[1]))
-        except ValueError:
-            continue
-    if not freqs:
-        continue
-    maf = min(freqs)
-    for i in range(len(bins) - 1):
-        if bins[i] <= maf < bins[i + 1]:
-            counts[i] += 1
-            break
-
-out_path = Path("{output}")
-out_path.write_text("bin_low\tbin_high\tcount\n")
-with out_path.open("a") as handle:
-    for i in range(len(counts)):
-        handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
-
-freq_path.unlink(missing_ok=True)
-PY
-        """
+    run:
+        from pathlib import Path
+        import subprocess
+        
+        out_path = Path(output.afs)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        freq_prefix = Path(output.afs).parent / "freq_tmp"
+        subprocess.run(
+            f"vcftools --gzvcf {input.vcf} --freq2 --out {freq_prefix}",
+            shell=True, check=True, capture_output=True
+        )
+        
+        freq_path = freq_prefix.with_suffix(".frq")
+        bins = params.bins
+        counts = [0 for _ in range(len(bins) - 1)]
+        
+        for line in freq_path.read_text().strip().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            freqs = []
+            for item in parts[5:]:
+                if ":" not in item:
+                    continue
+                try:
+                    freqs.append(float(item.split(":")[1]))
+                except ValueError:
+                    continue
+            if not freqs:
+                continue
+            maf = min(freqs)
+            for i in range(len(bins) - 1):
+                if bins[i] <= maf < bins[i + 1]:
+                    counts[i] += 1
+                    break
+        
+        out_path.write_text("bin_low\tbin_high\tcount\n")
+        with out_path.open("a") as handle:
+            for i in range(len(counts)):
+                handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
+        
+        freq_path.unlink(missing_ok=True)
+        freq_prefix.with_suffix(".log").unlink(missing_ok=True)
 
 rule fst_per_ref_pair:
     input:
@@ -700,120 +692,92 @@ rule allelic_balance_per_sample:
         "envs/allelic_balance.yaml"
     params:
         bins=AB_BINS
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {AB_OUTDIR}/{wildcards.ref}
-        python - <<'PY'
-import statistics
-from pathlib import Path
-import pysam
-
-bins = {params.bins}
-vcf_path = "{input.vcf}"
-out_path = Path("{output.summary}")
-raw_path = Path("{output.raw}")
-
-counts = [0 for _ in range(len(bins) - 1)]
-ratios = []
-
-vcf = pysam.VariantFile(vcf_path)
-samples = list(vcf.header.samples)
-if len(samples) != 1:
-    raise ValueError(f"Expected 1 sample in {vcf_path}, found {len(samples)}")
-sample = samples[0]
-
-for rec in vcf.fetch():
-    if "AD" not in rec.format or "GT" not in rec.format:
-        continue
-    gt = rec.samples[sample].get("GT")
-    if gt is None or len(gt) < 2:
-        continue
-    if gt[0] == gt[1]:
-        continue
-    ad = rec.samples[sample].get("AD")
-    if ad is None or len(ad) < 2:
-        continue
-    ref_depth = ad[0]
-    alt_depth = ad[1]
-    if ref_depth is None or alt_depth is None:
-        continue
-    total = ref_depth + alt_depth
-    if total == 0:
-        continue
-    ratio = ref_depth / total
-    ratios.append(ratio)
-    for i in range(len(bins) - 1):
-        if bins[i] <= ratio < bins[i + 1]:
-            counts[i] += 1
-            break
-
-mean_ratio = statistics.mean(ratios) if ratios else 0.0
-median_ratio = statistics.median(ratios) if ratios else 0.0
-total_hets = len(ratios)
-
-with raw_path.open("w") as raw_handle:
-    raw_handle.write("site\tref_depth\talt_depth\tref_ratio\n")
-
-with out_path.open("w") as handle:
-    handle.write("sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio\n")
-    handle.write(f"{sample}\t{wildcards.ref}\t{total_hets}\t{mean_ratio:.6f}\t{median_ratio:.6f}\n")
-    handle.write("bin_low\tbin_high\tcount\n")
-    for i in range(len(counts)):
-        handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
-
-with raw_path.open("a") as raw_handle:
-    for rec in vcf.fetch():
-        if "AD" not in rec.format or "GT" not in rec.format:
-            continue
-        gt = rec.samples[sample].get("GT")
-        if gt is None or len(gt) < 2:
-            continue
-        if gt[0] == gt[1]:
-            continue
-        ad = rec.samples[sample].get("AD")
-        if ad is None or len(ad) < 2:
-            continue
-        ref_depth = ad[0]
-        alt_depth = ad[1]
-        if ref_depth is None or alt_depth is None:
-            continue
-        total = ref_depth + alt_depth
-        if total == 0:
-            continue
-        ratio = ref_depth / total
-        site = f"{rec.contig}:{rec.pos}"
-        raw_handle.write(f"{site}\t{ref_depth}\t{alt_depth}\t{ratio:.6f}\n")
-PY
-        """
+    run:
+        import statistics
+        from pathlib import Path
+        import pysam
+        
+        bins = params.bins
+        vcf_path = input.vcf
+        out_path = Path(output.summary)
+        raw_path = Path(output.raw)
+        
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        counts = [0 for _ in range(len(bins) - 1)]
+        ratios = []
+        
+        vcf = pysam.VariantFile(vcf_path)
+        samples = list(vcf.header.samples)
+        if len(samples) != 1:
+            raise ValueError(f"Expected 1 sample in {vcf_path}, found {len(samples)}")
+        sample = samples[0]
+        
+        raw_data = []
+        for rec in vcf.fetch():
+            if "AD" not in rec.format or "GT" not in rec.format:
+                continue
+            gt = rec.samples[sample].get("GT")
+            if gt is None or len(gt) < 2:
+                continue
+            if gt[0] == gt[1]:
+                continue
+            ad = rec.samples[sample].get("AD")
+            if ad is None or len(ad) < 2:
+                continue
+            ref_depth = ad[0]
+            alt_depth = ad[1]
+            if ref_depth is None or alt_depth is None:
+                continue
+            total = ref_depth + alt_depth
+            if total == 0:
+                continue
+            ratio = ref_depth / total
+            ratios.append(ratio)
+            site = f"{rec.contig}:{rec.pos}"
+            raw_data.append((site, ref_depth, alt_depth, ratio))
+            for i in range(len(bins) - 1):
+                if bins[i] <= ratio < bins[i + 1]:
+                    counts[i] += 1
+                    break
+        
+        mean_ratio = statistics.mean(ratios) if ratios else 0.0
+        median_ratio = statistics.median(ratios) if ratios else 0.0
+        total_hets = len(ratios)
+        
+        with out_path.open("w") as handle:
+            handle.write("sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio\n")
+            handle.write(f"{sample}\t{wildcards.ref}\t{total_hets}\t{mean_ratio:.6f}\t{median_ratio:.6f}\n")
+            handle.write("bin_low\tbin_high\tcount\n")
+            for i in range(len(counts)):
+                handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
+        
+        with raw_path.open("w") as handle:
+            handle.write("site\tref_depth\talt_depth\tref_ratio\n")
+            for site, ref_depth, alt_depth, ratio in raw_data:
+                handle.write(f"{site}\t{ref_depth}\t{alt_depth}\t{ratio:.6f}\n")
 
 rule allelic_balance_summary:
     input:
         expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES)
     output:
-        AB_OUTDIR / "allelic_balance_summary.tsv"
+        summary=AB_OUTDIR / "allelic_balance_summary.tsv"
     conda:
         "envs/allelic_balance.yaml"
-    shell:
-        r"""
-        set -euo pipefail
-        python - <<'PY'
-from pathlib import Path
-
-inputs = {input}
-out_path = Path("{output}")
-rows = ["sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio"]
-
-for path in inputs:
-    text = Path(path).read_text().splitlines()
-    if len(text) < 2:
-        continue
-    rows.append(text[1])
-
-out_path.parent.mkdir(parents=True, exist_ok=True)
-out_path.write_text("\n".join(rows) + "\n")
-PY
-        """
+    run:
+        from pathlib import Path
+        
+        out_path = Path(output.summary)
+        rows = ["sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio"]
+        
+        for path in input:
+            text = Path(path).read_text().splitlines()
+            if len(text) < 2:
+                continue
+            rows.append(text[1])
+        
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("\n".join(rows) + "\n")
 
 rule roh_per_sample:
     input:
@@ -828,118 +792,117 @@ rule roh_per_sample:
     params:
         autosomes=ROH_AUTOSOMES,
         bcftools_args=ROH_BCFTOOLS_ARGS
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {ROH_OUTDIR}/{wildcards.ref}
-
-        roh_tmp=$(mktemp)
-        bcftools roh {params.bcftools_args} -o "$roh_tmp" {input.vcf}
-
-        python - <<'PY'
-from pathlib import Path
-
-roh_path = Path("""{roh_tmp}""")
-lengths_path = Path("""{input.lengths}""")
-out_roh = Path("{output.roh}")
-out_froh = Path("{output.froh}")
-ref_name = "{wildcards.ref}"
-sample = "{wildcards.sample}"
-autosome_map = {params.autosomes}
-
-lengths = {}
-for line in lengths_path.read_text().splitlines():
-    if not line.strip():
-        continue
-    parts = line.split()
-    if len(parts) < 2:
-        continue
-    contig, size = parts[0], parts[1]
-    try:
-        lengths[contig] = int(size)
-    except ValueError:
-        continue
-
-autosomes = autosome_map.get(ref_name, [])
-if autosomes:
-    genome_len = sum(lengths.get(c, 0) for c in autosomes)
-else:
-    genome_len = sum(lengths.values())
-
-roh_rows = []
-roh_total = 0
-for line in roh_path.read_text().splitlines():
-    if not line or line.startswith("#"):
-        continue
-    parts = line.split()
-    if len(parts) < 5:
-        continue
-    # bcftools roh output is typically: RG sample chrom start end ...
-    chrom = parts[2] if len(parts) >= 5 else parts[1]
-    try:
-        start = int(parts[3])
-        end = int(parts[4])
-    except ValueError:
-        continue
-    length = end - start + 1
-    if autosomes and chrom not in autosomes:
-        continue
-    roh_total += length
-    roh_rows.append((chrom, start, end, length))
-
-out_roh.write_text("chrom\tstart\tend\tlength\n")
-with out_roh.open("a") as handle:
-    for chrom, start, end, length in roh_rows:
-        handle.write(f"{chrom}\t{start}\t{end}\t{length}\n")
-
-f_roh = (roh_total / genome_len) if genome_len > 0 else 0.0
-out_froh.write_text("sample\tref\troh_bp\tgenome_bp\tf_roh\n")
-with out_froh.open("a") as handle:
-    handle.write(f"{sample}\t{ref_name}\t{roh_total}\t{genome_len}\t{f_roh:.6f}\n")
-PY
-
-        rm -f "$roh_tmp"
-        """
+    run:
+        import subprocess
+        from pathlib import Path
+        import tempfile
+        
+        out_path = Path(output.roh)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Run bcftools roh
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+            roh_tmp = tmp.name
+        
+        subprocess.run(
+            f"bcftools roh {params.bcftools_args} -o {roh_tmp} {input.vcf}",
+            shell=True, check=True, capture_output=True
+        )
+        
+        roh_path = Path(roh_tmp)
+        lengths_path = Path(input.lengths)
+        out_roh = Path(output.roh)
+        out_froh = Path(output.froh)
+        
+        # Read lengths
+        lengths = {}
+        for line in lengths_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            contig, size = parts[0], parts[1]
+            try:
+                lengths[contig] = int(size)
+            except ValueError:
+                continue
+        
+        # Get autosomes for this ref
+        autosome_map = params.autosomes
+        autosomes = autosome_map.get(wildcards.ref, [])
+        if autosomes:
+            genome_len = sum(lengths.get(c, 0) for c in autosomes)
+        else:
+            genome_len = sum(lengths.values())
+        
+        # Parse ROH results
+        roh_rows = []
+        roh_total = 0
+        for line in roh_path.read_text().splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            chrom = parts[2] if len(parts) >= 5 else parts[1]
+            try:
+                start = int(parts[3])
+                end = int(parts[4])
+            except ValueError:
+                continue
+            length = end - start + 1
+            if autosomes and chrom not in autosomes:
+                continue
+            roh_total += length
+            roh_rows.append((chrom, start, end, length))
+        
+        # Write outputs
+        out_roh.write_text("chrom\tstart\tend\tlength\n")
+        with out_roh.open("a") as handle:
+            for chrom, start, end, length in roh_rows:
+                handle.write(f"{chrom}\t{start}\t{end}\t{length}\n")
+        
+        f_roh = (roh_total / genome_len) if genome_len > 0 else 0.0
+        out_froh.write_text("sample\tref\troh_bp\tgenome_bp\tf_roh\n")
+        with out_froh.open("a") as handle:
+            handle.write(f"{wildcards.sample}\t{wildcards.ref}\t{roh_total}\t{genome_len}\t{f_roh:.6f}\n")
+        
+        roh_path.unlink()
 
 rule roh_summary:
     input:
         expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES)
     output:
-        ROH_OUTDIR / "f_roh_summary.tsv"
+        summary=ROH_OUTDIR / "f_roh_summary.tsv"
     conda:
         "envs/roh.yaml"
-    shell:
-        r"""
-        set -euo pipefail
-        python - <<'PY'
-from pathlib import Path
-
-inputs = {input}
-out_path = Path("{output}")
-rows = ["sample\tref\troh_bp\tgenome_bp\tf_roh"]
-
-for path in inputs:
-    text = Path(path).read_text().splitlines()
-    if len(text) < 2:
-        continue
-    rows.append(text[1])
-
-out_path.parent.mkdir(parents=True, exist_ok=True)
-out_path.write_text("\n".join(rows) + "\n")
-PY
-        """
+    run:
+        from pathlib import Path
+        
+        out_path = Path(output.summary)
+        rows = ["sample\tref\troh_bp\tgenome_bp\tf_roh"]
+        
+        for path in input:
+            text = Path(path).read_text().splitlines()
+            if len(text) < 2:
+                continue
+            rows.append(text[1])
+        
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("\n".join(rows) + "\n")
 
 rule ref_lengths:
     input:
         fasta=_gatk_ref_fasta,
         fai=_gatk_ref_fai
     output:
-        _ref_lengths_path
+        lengths=_ref_lengths_path
     conda:
         "envs/roh.yaml"
     shell:
         r"""
         set -euo pipefail
         mkdir -p {ROH_OUTDIR}/lengths
-        awk -F '\t' 'BEGIN {OFS="\t"} {print $1,$2}' {input.fai} > {output}
+        awk -F '\t' 'BEGIN {OFS="\t"} {print $1,$2}' {input.fai} > {output.lengths}
         """
