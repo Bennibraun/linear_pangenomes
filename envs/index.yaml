@@ -1,0 +1,11 @@
+name: linear-pangenomes-index
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - gatk4
+  - samtools
+  - bwa
+  - htslib
+  - bcftools

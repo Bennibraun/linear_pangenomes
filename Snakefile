@@ -188,8 +188,8 @@ rule assemble_and_qc:
     threads:
         ASSEMBLY_THREADS
     resources:
-        partition="long",
-        runtime=1440,
+        slurm_partition="long",
+        slurm_time=1440,
         mem_mb=32000,
         cpus=ASSEMBLY_THREADS
     params:
@@ -248,8 +248,8 @@ rule call_svs:
     threads:
         SV_THREADS
     resources:
-        partition="long",
-        runtime=1440,
+        slurm_partition="long",
+        slurm_time=1440,
         mem_mb=32000,
         cpus=SV_THREADS
     params:
@@ -306,8 +306,8 @@ rule make_cactus_graph:
     threads:
         CACTUS_MAX_CORES
     resources:
-        partition="highmem",
-        runtime=2880,
+        slurm_partition="highmem",
+        slurm_time=2880,
         mem_mb=128000,
         cpus=CACTUS_MAX_CORES
     params:
@@ -381,8 +381,8 @@ rule align_wgs:
     threads:
         ALIGN_THREADS
     resources:
-        partition="long",
-        runtime=960,
+        slurm_partition="long",
+        slurm_time=960,
         mem_mb=16000,
         cpus=ALIGN_THREADS
     shell:
@@ -416,8 +416,8 @@ rule align_metrics_per_bam:
     threads:
         METRICS_THREADS
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=METRICS_THREADS
     params:
@@ -451,8 +451,8 @@ rule align_metrics_per_gam:
     threads:
         METRICS_THREADS
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=METRICS_THREADS
     shell:
@@ -479,8 +479,8 @@ rule align_metrics_summary:
     conda:
         "envs/align_metrics.yaml"
     resources:
-        partition="short",
-        runtime=60,
+        slurm_partition="short",
+        slurm_time=60,
         mem_mb=2000,
         cpus=1
     run:
@@ -529,10 +529,10 @@ rule index_augref:
         pac=f"{ALIGN_AUGREF}.pac",
         sa=f"{ALIGN_AUGREF}.sa"
     conda:
-        "envs/align_wgs.yaml"
+        "envs/index.yaml"
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=8000,
         cpus=1
     shell:
@@ -555,10 +555,10 @@ rule index_conspec:
         pac=f"{ALIGN_CONSPEC}.pac",
         sa=f"{ALIGN_CONSPEC}.sa"
     conda:
-        "envs/align_wgs.yaml"
+        "envs/index.yaml"
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=8000,
         cpus=1
     shell:
@@ -581,10 +581,10 @@ rule index_hetspec:
         pac=f"{ALIGN_HETSPEC}.pac",
         sa=f"{ALIGN_HETSPEC}.sa"
     conda:
-        "envs/align_wgs.yaml"
+        "envs/index.yaml"
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=8000,
         cpus=1
     shell:
@@ -610,8 +610,8 @@ rule gatk_haplotypecaller:
     threads:
         GATK_THREADS
     resources:
-        partition="short",
-        runtime=240,
+        slurm_partition="short",
+        slurm_time=240,
         mem_mb=8000,
         cpus=GATK_THREADS
     shell:
@@ -637,8 +637,8 @@ rule vg_call:
     threads:
         VG_THREADS
     resources:
-        partition="long",
-        runtime=480,
+        slurm_partition="long",
+        slurm_time=480,
         mem_mb=16000,
         cpus=VG_THREADS
     shell:
@@ -665,8 +665,8 @@ rule merge_gatk_vcfs:
     conda:
         "envs/fst_afs.yaml"
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=1
     shell:
@@ -688,8 +688,8 @@ rule afs_per_ref:
     params:
         bins=AFS_BINS
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=1
     run:
@@ -750,8 +750,8 @@ rule fst_per_ref_pair:
         pop1_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop1]),
         pop2_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop2])
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=1
     shell:
@@ -785,8 +785,8 @@ rule pi_per_ref:
         window_size=PI_WINDOW_SIZE,
         window_step=PI_WINDOW_STEP
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=1
     shell:
@@ -811,8 +811,8 @@ rule allelic_balance_per_sample:
     params:
         bins=AB_BINS
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=1
     run:
@@ -888,8 +888,8 @@ rule allelic_balance_summary:
     conda:
         "envs/allelic_balance.yaml"
     resources:
-        partition="short",
-        runtime=60,
+        slurm_partition="short",
+        slurm_time=60,
         mem_mb=2000,
         cpus=1
     run:
@@ -921,8 +921,8 @@ rule roh_per_sample:
         autosomes=ROH_AUTOSOMES,
         bcftools_args=ROH_BCFTOOLS_ARGS
     resources:
-        partition="short",
-        runtime=120,
+        slurm_partition="short",
+        slurm_time=120,
         mem_mb=4000,
         cpus=1
     run:
@@ -1011,8 +1011,8 @@ rule roh_summary:
     conda:
         "envs/roh.yaml"
     resources:
-        partition="short",
-        runtime=60,
+        slurm_partition="short",
+        slurm_time=60,
         mem_mb=2000,
         cpus=1
     run:
@@ -1039,8 +1039,8 @@ rule ref_lengths:
     conda:
         "envs/roh.yaml"
     resources:
-        partition="short",
-        runtime=60,
+        slurm_partition="short",
+        slurm_time=60,
         mem_mb=2000,
         cpus=1
     shell:
