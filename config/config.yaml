@@ -1,6 +1,8 @@
-# Core configuration for the Snakemake prototype.
-# Update these paths on the cluster before running.
+# Linear Pangenome Pipeline Configuration
 
+# ============================================================================
+# INPUT DATA
+# ============================================================================
 inputs:
   long_reads_dir: "/path/to/long_reads"
   long_read_suffix: ".fastq"
@@ -8,19 +10,49 @@ inputs:
   short_read_r1_suffix: "_1.fastq.gz"
   short_read_r2_suffix: "_2.fastq.gz"
 
+# ============================================================================
+# SAMPLES
+# ============================================================================
+samples:
+  - "sample1"
+  - "sample2"
+
+# ============================================================================
+# REFERENCE GENOMES
+# ============================================================================
+references:
+  augref:
+    fasta: "results/sv_calls/augref/augmented_reference.fasta"
+  conspec:
+    fasta: "/path/to/conspecific_reference.fasta"
+  hetspec:
+    fasta: "/path/to/heterospecific_reference.fasta"
+
+# ============================================================================
+# POPULATION STRUCTURE
+# ============================================================================
+populations:
+  - name: "pop1"
+    samples: "/path/to/pop1_samples.txt"
+  - name: "pop2"
+    samples: "/path/to/pop2_samples.txt"
+
+population_pairs:
+  - ["pop1", "pop2"]
+
+# ============================================================================
+# STAGE-SPECIFIC CONFIGURATION
+# ============================================================================
+
 assembly:
-  samples:
-    - "sample1"
   outdir: "results/assemblies"
   genome_size: "225m"
   lineage: "hymenoptera_odb10"
   threads: 8
 
 sv_calling:
-  assembly_dir: "results/assemblies/flye"
-  samples:
-    - "sample1"
   outdir: "results/sv_calls"
+  assembly_dir: "results/assemblies/flye"
   threads: 8
   survivor_exec: "/path/to/SURVIVOR"
   min_sv_size: 50
@@ -41,24 +73,13 @@ cactus:
   ref_contigs: ""
   extra_args: ""
 
-references:
-  conspec: "/path/to/conspecific_reference.fasta"
-  hetspec: "/path/to/heterospecific_reference.fasta"
-
 align_wgs:
-  samples:
-    - "sample1"
   outdir: "results/wgs_alignments"
-  augref: "results/sv_calls/augref/augmented_reference.fasta"
   cactus_gbz: "/path/to/cactus/output/cactus_run.gbz"
   threads: 4
 
 align_metrics:
   outdir: "results/align_metrics"
-  ref_types:
-    - "augref"
-    - "conspec"
-    - "hetspec"
   include_gam: true
   min_mapq: 0
   min_baseq: 0
@@ -67,63 +88,28 @@ align_metrics:
 variant_calling:
   outdir: "results/variants"
   gatk:
-    samples:
-      - "sample1"
     threads: 4
-    references:
-      - name: "augref"
-        fasta: "results/sv_calls/augref/augmented_reference.fasta"
-      - name: "conspec"
-        fasta: "${references.conspec}"
-      - name: "hetspec"
-        fasta: "${references.hetspec}"
   vg:
-    samples:
-      - "sample1"
     graph_xg: "/path/to/cactus/output/cactus_run.xg"
     threads: 4
 
 fst_afs:
   outdir: "results/fst_afs"
-  populations:
-    - name: "pop1"
-      samples: "/path/to/pop1_samples.txt"
-    - name: "pop2"
-      samples: "/path/to/pop2_samples.txt"
-  pairs:
-    - pop1: "pop1"
-      pop2: "pop2"
   window_size: 0
   window_step: 0
   afs_bins: [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
 
 pi:
   outdir: "results/pi"
-  references:
-    - "augref"
-    - "conspec"
-    - "hetspec"
   window_size: 10000
   window_step: 5000
 
 allelic_balance:
   outdir: "results/allelic_balance"
-  references:
-    - "augref"
-    - "conspec"
-    - "hetspec"
-  samples:
-    - "sample1"
   bins: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 roh:
   outdir: "results/roh"
-  references:
-    - "augref"
-    - "conspec"
-    - "hetspec"
-  samples:
-    - "sample1"
   genome_lengths: {}
   autosomes:
     augref: []

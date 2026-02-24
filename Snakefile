@@ -3,22 +3,52 @@ from pathlib import Path
 configfile: "config/config.yaml"
 
 SCRIPTS = config["scripts"]
+
+# ============================================================================
+# Global input configurations and sample list
+# ============================================================================
 INPUTS_CFG = config["inputs"]
 LONG_READS_DIR = INPUTS_CFG["long_reads_dir"]
 LONG_READ_SUFFIX = INPUTS_CFG.get("long_read_suffix", ".fastq")
 SHORT_READS_DIR = INPUTS_CFG["short_reads_dir"]
 SHORT_READ_R1_SUFFIX = INPUTS_CFG.get("short_read_r1_suffix", "_1.fastq.gz")
 SHORT_READ_R2_SUFFIX = INPUTS_CFG.get("short_read_r2_suffix", "_2.fastq.gz")
+SAMPLES = config["samples"]
+
+# ============================================================================
+# Reference genome configurations
+# ============================================================================
+REFS_NESTED = config["references"]
+REFERENCE_NAMES = list(REFS_NESTED.keys())  # ["augref", "conspec", "hetspec"]
+ALIGN_AUGREF = REFS_NESTED["augref"]["fasta"]
+ALIGN_CONSPEC = REFS_NESTED["conspec"]["fasta"]
+ALIGN_HETSPEC = REFS_NESTED["hetspec"]["fasta"]
+
+# Retrieve reference fasta path by name
+def get_ref_fasta(name):
+    return REFS_NESTED[name]["fasta"]
+
+# ============================================================================
+# Population definitions for FST/AFS analysis
+# ============================================================================
+POPULATIONS = config["populations"]
+POP_NAMES = [p["name"] for p in POPULATIONS]
+POP_SAMPLES = {p["name"]: p["samples"] for p in POPULATIONS}
+POP_PAIRS = config["population_pairs"]
+POP_PAIR_TUPLES = [(p[0], p[1]) for p in POP_PAIRS]
+
+# ============================================================================
+# Stage-specific configs
+# ============================================================================
 ASSEMBLY_CFG = config["assembly"]
 ASSEMBLY_OUTDIR = Path(ASSEMBLY_CFG.get("outdir", "results/assemblies"))
-ASSEMBLY_SAMPLES = ASSEMBLY_CFG["samples"]
 ASSEMBLY_GENOME_SIZE = ASSEMBLY_CFG.get("genome_size", "225m")
 ASSEMBLY_LINEAGE = ASSEMBLY_CFG.get("lineage", "hymenoptera_odb10")
 ASSEMBLY_THREADS = ASSEMBLY_CFG.get("threads", 1)
+
 SV_CFG = config["sv_calling"]
 SV_OUTDIR = Path(SV_CFG.get("outdir", "results/sv_calls"))
 SV_ASSEMBLY_DIR = SV_CFG.get("assembly_dir", str(ASSEMBLY_OUTDIR / "flye"))
-SV_SAMPLES = SV_CFG["samples"]
 SV_THREADS = SV_CFG.get("threads", 8)
 SV_SURVIVOR = SV_CFG.get("survivor_exec", "SURVIVOR")
 SV_MIN_SIZE = SV_CFG.get("min_sv_size", 50)
@@ -26,7 +56,7 @@ SV_MIN_SUPPORT = SV_CFG.get("min_read_support", 3)
 SV_BREAKPOINT_SLOP = SV_CFG.get("breakpoint_slop", 1000)
 SV_JASMINE_SLOP = SV_CFG.get("jasmine_slop", 500)
 SV_FLANK = SV_CFG.get("flank", 200)
-REF_CFG = config["references"]
+
 CACTUS_CFG = config["cactus"]
 CACTUS_IMAGE = CACTUS_CFG["image"]
 CACTUS_BIND = CACTUS_CFG.get("bind", "")
@@ -38,35 +68,30 @@ CACTUS_REFERENCE = CACTUS_CFG["reference"]
 CACTUS_MAX_CORES = CACTUS_CFG.get("max_cores", 8)
 CACTUS_REF_CONTIGS = CACTUS_CFG.get("ref_contigs", "")
 CACTUS_EXTRA_ARGS = CACTUS_CFG.get("extra_args", "")
+
 ALIGN_CFG = config["align_wgs"]
 ALIGN_OUTDIR = Path(ALIGN_CFG.get("outdir", "results/wgs_alignments"))
-ALIGN_SAMPLES = ALIGN_CFG["samples"]
-ALIGN_AUGREF = ALIGN_CFG.get("augref", str(SV_OUTDIR / "augref/augmented_reference.fasta"))
-ALIGN_CONSPEC = REF_CFG["conspec"]
-ALIGN_HETSPEC = REF_CFG["hetspec"]
 ALIGN_CACTUS_GBZ = ALIGN_CFG.get("cactus_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 ALIGN_THREADS = ALIGN_CFG.get("threads", 4)
+
 METRICS_CFG = config["align_metrics"]
 METRICS_OUTDIR = Path(METRICS_CFG.get("outdir", "results/align_metrics"))
-METRICS_REF_TYPES = METRICS_CFG.get("ref_types", ["augref", "conspec", "hetspec"])
+METRICS_REF_TYPES = REFERENCE_NAMES
 METRICS_GAM = METRICS_CFG.get("include_gam", True)
 METRICS_MIN_MAPQ = METRICS_CFG.get("min_mapq", 0)
 METRICS_MIN_BASEQ = METRICS_CFG.get("min_baseq", 0)
 METRICS_THREADS = METRICS_CFG.get("threads", 2)
+
 VC_CFG = config["variant_calling"]
 GATK_CFG = VC_CFG["gatk"]
 VG_CFG = VC_CFG["vg"]
 VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
-GATK_SAMPLES = GATK_CFG.get("samples", ALIGN_SAMPLES)
-GATK_REFS = GATK_CFG["references"]
 GATK_THREADS = GATK_CFG.get("threads", 4)
-VG_SAMPLES = VG_CFG.get("samples", ALIGN_SAMPLES)
 VG_XG = VG_CFG["graph_xg"]
 VG_THREADS = VG_CFG.get("threads", 4)
+
 FST_CFG = config["fst_afs"]
 FST_OUTDIR = Path(FST_CFG.get("outdir", "results/fst_afs"))
-FST_POPULATIONS = {p["name"]: p["samples"] for p in FST_CFG["populations"]}
-FST_PAIRS = FST_CFG["pairs"]
 FST_WINDOW_SIZE = FST_CFG.get("window_size", 0)
 FST_WINDOW_STEP = FST_CFG.get("window_step", 0)
 FST_WINDOW_ARGS = ""
@@ -75,22 +100,18 @@ if FST_WINDOW_SIZE and FST_WINDOW_STEP:
 elif FST_WINDOW_SIZE:
     FST_WINDOW_ARGS = f"--fst-window-size {FST_WINDOW_SIZE}"
 AFS_BINS = FST_CFG.get("afs_bins", [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5])
-FST_PAIR_TUPLES = [(pair["pop1"], pair["pop2"]) for pair in FST_PAIRS]
-GATK_REF_NAMES = [r["name"] for r in GATK_REFS]
+
 PI_CFG = config["pi"]
 PI_OUTDIR = Path(PI_CFG.get("outdir", "results/pi"))
 PI_WINDOW_SIZE = PI_CFG.get("window_size", 10000)
 PI_WINDOW_STEP = PI_CFG.get("window_step", 5000)
-PI_REF_NAMES = PI_CFG.get("references", GATK_REF_NAMES)
+
 AB_CFG = config["allelic_balance"]
 AB_OUTDIR = Path(AB_CFG.get("outdir", "results/allelic_balance"))
 AB_BINS = AB_CFG.get("bins", [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
-AB_REF_NAMES = AB_CFG.get("references", GATK_REF_NAMES)
-AB_SAMPLES = AB_CFG.get("samples", GATK_SAMPLES)
+
 ROH_CFG = config["roh"]
 ROH_OUTDIR = Path(ROH_CFG.get("outdir", "results/roh"))
-ROH_REF_NAMES = ROH_CFG.get("references", GATK_REF_NAMES)
-ROH_SAMPLES = ROH_CFG.get("samples", GATK_SAMPLES)
 ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
 ROH_AUTOSOMES = ROH_CFG.get("autosomes", {})
 ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
@@ -99,11 +120,11 @@ shell.executable("bash")
 
 rule all:
     input:
-        expand(ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt", sample=ASSEMBLY_SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "nanoplot/{sample}", sample=ASSEMBLY_SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=ASSEMBLY_SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "quast/{sample}", sample=ASSEMBLY_SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "busco/{sample}", sample=ASSEMBLY_SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt", sample=SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "nanoplot/{sample}", sample=SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "quast/{sample}", sample=SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "busco/{sample}", sample=SAMPLES),
         SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
         SV_OUTDIR / "pan_sample_catalog/catalog_stats.txt",
@@ -112,30 +133,30 @@ rule all:
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam", sample=ALIGN_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai", sample=ALIGN_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam", sample=ALIGN_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai", sample=ALIGN_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=ALIGN_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=ALIGN_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=ALIGN_SAMPLES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=ALIGN_SAMPLES, ref=METRICS_REF_TYPES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=ALIGN_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam", sample=SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai", sample=SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam", sample=SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai", sample=SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SAMPLES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SAMPLES, ref=METRICS_REF_TYPES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SAMPLES),
         METRICS_OUTDIR / "alignment_metrics.tsv",
-        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz", ref=GATK_REF_NAMES, sample=GATK_SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi", ref=GATK_REF_NAMES, sample=GATK_SAMPLES),
-        expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=VG_SAMPLES),
-        expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=VG_SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz", ref=GATK_REF_NAMES),
-        expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi", ref=GATK_REF_NAMES),
-        expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=GATK_REF_NAMES),
-        [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in GATK_REF_NAMES for (pop1, pop2) in FST_PAIR_TUPLES],
-        expand(PI_OUTDIR / "{ref}.windowed.pi", ref=PI_REF_NAMES),
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=AB_REF_NAMES, sample=AB_SAMPLES),
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv", ref=AB_REF_NAMES, sample=AB_SAMPLES),
+        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SAMPLES),
+        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SAMPLES),
+        expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SAMPLES),
+        expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SAMPLES),
+        expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz", ref=REFERENCE_NAMES),
+        expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
+        expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=REFERENCE_NAMES),
+        [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
+        expand(PI_OUTDIR / "{ref}.windowed.pi", ref=REFERENCE_NAMES),
+        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
+        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
         AB_OUTDIR / "allelic_balance_summary.tsv",
-        expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=ROH_REF_NAMES, sample=ROH_SAMPLES),
-        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=ROH_REF_NAMES, sample=ROH_SAMPLES),
+        expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
+        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
         ROH_OUTDIR / "f_roh_summary.tsv"
 
 rule assemble_and_qc:
@@ -194,8 +215,8 @@ rule assemble_and_qc:
 
 rule call_svs:
     input:
-        reads=[f"{LONG_READS_DIR}/{sample}{LONG_READ_SUFFIX}" for sample in SV_SAMPLES],
-        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in SV_SAMPLES]
+        reads=[f"{LONG_READS_DIR}/{sample}{LONG_READ_SUFFIX}" for sample in SAMPLES],
+        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in SAMPLES]
     output:
         survivor=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         jasmine=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
@@ -225,7 +246,7 @@ rule call_svs:
         mkdir -p {SV_OUTDIR}
         python - <<'PY'
 from pathlib import Path
-samples = {SV_SAMPLES}
+samples = {SAMPLES}
 Path("{params.samples_file}").write_text("\n".join(samples) + "\n")
 PY
 
@@ -438,8 +459,8 @@ rule align_metrics_per_gam:
 
 rule align_metrics_summary:
     input:
-        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=ALIGN_SAMPLES, ref=METRICS_REF_TYPES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=ALIGN_SAMPLES)
+        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SAMPLES, ref=METRICS_REF_TYPES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SAMPLES)
     output:
         METRICS_OUTDIR / "alignment_metrics.tsv"
     conda:
@@ -469,10 +490,9 @@ PY
         """
 
 def _gatk_ref_fasta(wildcards):
-    for ref in GATK_REFS:
-        if ref["name"] == wildcards.ref:
-            return ref["fasta"]
-    raise ValueError(f"Unknown GATK reference: {wildcards.ref}")
+    if wildcards.ref not in REFS_NESTED:
+        raise ValueError(f"Unknown reference: {wildcards.ref}")
+    return REFS_NESTED[wildcards.ref]["fasta"]
 
 def _gatk_ref_fai(wildcards):
     return f"{_gatk_ref_fasta(wildcards)}.fai"
@@ -559,12 +579,12 @@ rule vg_call:
         """
 
 def _gatk_vcfs_for_ref(wildcards):
-    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz" for sample in GATK_SAMPLES]
+    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz" for sample in SAMPLES]
 
 rule merge_gatk_vcfs:
     input:
         vcfs=_gatk_vcfs_for_ref,
-        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz.tbi" for sample in GATK_SAMPLES]
+        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz.tbi" for sample in SAMPLES]
     output:
         vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
         tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
@@ -635,8 +655,8 @@ rule fst_per_ref_pair:
     input:
         vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
         tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi",
-        pop1=lambda wildcards: FST_POPULATIONS[wildcards.pop1],
-        pop2=lambda wildcards: FST_POPULATIONS[wildcards.pop2]
+        pop1=lambda wildcards: POP_SAMPLES[wildcards.pop1],
+        pop2=lambda wildcards: POP_SAMPLES[wildcards.pop2]
     output:
         FST_OUTDIR / "fst/{ref}/{pop1}_vs_{pop2}.weir.fst"
     conda:
@@ -776,7 +796,7 @@ PY
 
 rule allelic_balance_summary:
     input:
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=AB_REF_NAMES, sample=AB_SAMPLES)
+        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SAMPLES)
     output:
         AB_OUTDIR / "allelic_balance_summary.tsv"
     conda:
@@ -890,7 +910,7 @@ PY
 
 rule roh_summary:
     input:
-        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=ROH_REF_NAMES, sample=ROH_SAMPLES)
+        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SAMPLES)
     output:
         ROH_OUTDIR / "f_roh_summary.tsv"
     conda:
