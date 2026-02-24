@@ -17,7 +17,6 @@ SV_READS_DIR = SV_CFG["reads_dir"]
 SV_READ_SUFFIX = SV_CFG.get("read_suffix", ".fastq")
 SV_ASSEMBLY_DIR = SV_CFG.get("assembly_dir", str(ASSEMBLY_OUTDIR / "flye"))
 SV_SAMPLES = SV_CFG["samples"]
-SV_REFERENCE = SV_CFG["reference"]
 SV_THREADS = SV_CFG.get("threads", 8)
 SV_SURVIVOR = SV_CFG.get("survivor_exec", "SURVIVOR")
 SV_MIN_SIZE = SV_CFG.get("min_sv_size", 50)
@@ -25,6 +24,7 @@ SV_MIN_SUPPORT = SV_CFG.get("min_read_support", 3)
 SV_BREAKPOINT_SLOP = SV_CFG.get("breakpoint_slop", 1000)
 SV_JASMINE_SLOP = SV_CFG.get("jasmine_slop", 500)
 SV_FLANK = SV_CFG.get("flank", 200)
+REF_CFG = config["references"]
 CACTUS_CFG = config["cactus"]
 CACTUS_IMAGE = CACTUS_CFG["image"]
 CACTUS_BIND = CACTUS_CFG.get("bind", "")
@@ -43,8 +43,8 @@ ALIGN_READS_DIR = ALIGN_CFG["reads_dir"]
 ALIGN_R1_SUFFIX = ALIGN_CFG.get("r1_suffix", "_1.fastq.gz")
 ALIGN_R2_SUFFIX = ALIGN_CFG.get("r2_suffix", "_2.fastq.gz")
 ALIGN_AUGREF = ALIGN_CFG.get("augref", str(SV_OUTDIR / "augref/augmented_reference.fasta"))
-ALIGN_CONSPEC = ALIGN_CFG["conspec"]
-ALIGN_HETSPEC = ALIGN_CFG["hetspec"]
+ALIGN_CONSPEC = REF_CFG["conspec"]
+ALIGN_HETSPEC = REF_CFG["hetspec"]
 ALIGN_CACTUS_GBZ = ALIGN_CFG.get("cactus_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 ALIGN_THREADS = ALIGN_CFG.get("threads", 4)
 METRICS_CFG = config["align_metrics"]
@@ -209,7 +209,7 @@ rule call_svs:
         SV_THREADS
     params:
         script=SCRIPTS["call_svs"],
-        reference=SV_REFERENCE,
+        reference=ALIGN_CONSPEC,
         reads_dir=SV_READS_DIR,
         assembly_dir=SV_ASSEMBLY_DIR,
         outdir=SV_OUTDIR,

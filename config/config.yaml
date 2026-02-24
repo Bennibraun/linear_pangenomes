@@ -12,7 +12,6 @@ assembly:
   threads: 8
 
 sv_calling:
-  reference: "/path/to/reference.fasta"
   reads_dir: "/path/to/long_reads"
   read_suffix: ".fastq"
   assembly_dir: "results/assemblies/flye"
@@ -39,6 +38,10 @@ cactus:
   ref_contigs: ""
   extra_args: ""
 
+references:
+  conspec: "/path/to/conspecific_reference.fasta"
+  hetspec: "/path/to/heterospecific_reference.fasta"
+
 align_wgs:
   reads_dir: "/path/to/illumina_reads"
   r1_suffix: "_1.fastq.gz"
@@ -47,8 +50,6 @@ align_wgs:
     - "sample1"
   outdir: "results/wgs_alignments"
   augref: "results/sv_calls/augref/augmented_reference.fasta"
-  conspec: "/path/to/conspecific_reference.fasta"
-  hetspec: "/path/to/heterospecific_reference.fasta"
   cactus_gbz: "/path/to/cactus/output/cactus_run.gbz"
   threads: 4
 
@@ -73,9 +74,9 @@ variant_calling:
       - name: "augref"
         fasta: "results/sv_calls/augref/augmented_reference.fasta"
       - name: "conspec"
-        fasta: "/path/to/conspecific_reference.fasta"
+        fasta: "${references.conspec}"
       - name: "hetspec"
-        fasta: "/path/to/heterospecific_reference.fasta"
+        fasta: "${references.hetspec}"
   vg:
     samples:
       - "sample1"
