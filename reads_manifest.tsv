@@ -1,0 +1,7 @@
+sample_id	seq_type	platform	grouping	fastq_r1	fastq_r2
+ont_sample1	long	ONT	pop1	/path/to/long_reads/ont_sample1.fastq	
+ont_sample2	long	ONT	pop1	/path/to/long_reads/ont_sample2.fastq	
+ont_sample3	long	ONT	pop2	/path/to/long_reads/ont_sample3.fastq	
+ill_sample1	short	Illumina	pop1	/path/to/short_reads/ill_sample1_R1.fastq.gz	/path/to/short_reads/ill_sample1_R2.fastq.gz
+ill_sample2	short	Illumina	pop1	/path/to/short_reads/ill_sample2_R1.fastq.gz	/path/to/short_reads/ill_sample2_R2.fastq.gz
+ill_sample3	short	Illumina	pop2	/path/to/short_reads/ill_sample3_R1.fastq.gz	/path/to/short_reads/ill_sample3_R2.fastq.gz

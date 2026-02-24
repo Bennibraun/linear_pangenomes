@@ -1,44 +1,53 @@
 from pathlib import Path
+import pandas as pd
 
 configfile: "config/config.yaml"
 
 SCRIPTS = config["scripts"]
 
 # ============================================================================
-# Global input configurations and sample list
+# Parse reads manifest (TSV with columns: sample_id, seq_type, platform, grouping, fastq_r1, fastq_r2)
 # ============================================================================
 INPUTS_CFG = config["inputs"]
-LONG_READS_DIR = INPUTS_CFG["long_reads_dir"]
-LONG_READ_SUFFIX = INPUTS_CFG.get("long_read_suffix", ".fastq")
-SHORT_READS_DIR = INPUTS_CFG["short_reads_dir"]
-SHORT_READ_R1_SUFFIX = INPUTS_CFG.get("short_read_r1_suffix", "_1.fastq.gz")
-SHORT_READ_R2_SUFFIX = INPUTS_CFG.get("short_read_r2_suffix", "_2.fastq.gz")
-SAMPLES = config["samples"]
+MANIFEST_FILE = INPUTS_CFG["reads_manifest"]
+
+# Read manifest
+manifest_df = pd.read_csv(MANIFEST_FILE, sep="\t")
+
+# Extract sample lists by seq_type
+LONG_SAMPLES = manifest_df[manifest_df["seq_type"] == "long"]["sample_id"].tolist()
+SHORT_SAMPLES = manifest_df[manifest_df["seq_type"] == "short"]["sample_id"].tolist()
+
+# Build lookup tables for fastq paths
+LONG_READS = {row["sample_id"]: row["fastq_r1"] for _, row in manifest_df[manifest_df["seq_type"] == "long"].iterrows()}
+SHORT_READS_R1 = {row["sample_id"]: row["fastq_r1"] for _, row in manifest_df[manifest_df["seq_type"] == "short"].iterrows()}
+SHORT_READS_R2 = {row["sample_id"]: row["fastq_r2"] for _, row in manifest_df[manifest_df["seq_type"] == "short"].iterrows()}
+
+# Population/grouping structure
+SAMPLE_TO_POP = dict(zip(manifest_df["sample_id"], manifest_df["grouping"]))
+POP_NAMES = sorted(manifest_df["grouping"].unique().tolist())
+POP_SAMPLES = {pop: manifest_df[manifest_df["grouping"] == pop]["sample_id"].tolist() for pop in POP_NAMES}
 
 # ============================================================================
 # Reference genome configurations
 # ============================================================================
 REFS_NESTED = config["references"]
-REFERENCE_NAMES = list(REFS_NESTED.keys())  # ["augref", "conspec", "hetspec"]
+REFERENCE_NAMES = list(REFS_NESTED.keys())
 ALIGN_AUGREF = REFS_NESTED["augref"]["fasta"]
 ALIGN_CONSPEC = REFS_NESTED["conspec"]["fasta"]
 ALIGN_HETSPEC = REFS_NESTED["hetspec"]["fasta"]
 
-# Retrieve reference fasta path by name
 def get_ref_fasta(name):
     return REFS_NESTED[name]["fasta"]
 
 # ============================================================================
-# Population definitions for FST/AFS analysis
+# Population pairs for FST/AFS analysis
 # ============================================================================
-POPULATIONS = config["populations"]
-POP_NAMES = [p["name"] for p in POPULATIONS]
-POP_SAMPLES = {p["name"]: p["samples"] for p in POPULATIONS}
 POP_PAIRS = config["population_pairs"]
 POP_PAIR_TUPLES = [(p[0], p[1]) for p in POP_PAIRS]
 
 # ============================================================================
-# Stage-specific configs
+# Stage-specific configurations
 # ============================================================================
 ASSEMBLY_CFG = config["assembly"]
 ASSEMBLY_OUTDIR = Path(ASSEMBLY_CFG.get("outdir", "results/assemblies"))
@@ -120,48 +129,55 @@ shell.executable("bash")
 
 rule all:
     input:
-        expand(ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt", sample=SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "nanoplot/{sample}", sample=SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "quast/{sample}", sample=SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "busco/{sample}", sample=SAMPLES),
+        # Assembly and QC (long reads only)
+        expand(ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt", sample=LONG_SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "nanoplot/{sample}", sample=LONG_SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "quast/{sample}", sample=LONG_SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "busco/{sample}", sample=LONG_SAMPLES),
+        # SV calling
         SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
         SV_OUTDIR / "pan_sample_catalog/catalog_stats.txt",
         SV_OUTDIR / "pan_sample_catalog/sv_support_matrix.txt",
         SV_OUTDIR / "augref/augmented_reference.fasta",
+        # Cactus graph
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam", sample=SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai", sample=SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam", sample=SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai", sample=SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SAMPLES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SAMPLES, ref=METRICS_REF_TYPES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SAMPLES),
+        # WGS alignment (short reads only)
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
+        # Alignment metrics
+        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=METRICS_REF_TYPES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
         METRICS_OUTDIR / "alignment_metrics.tsv",
-        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SAMPLES),
-        expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SAMPLES),
-        expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SAMPLES),
+        # Variant calling
+        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz", ref=REFERENCE_NAMES),
         expand(VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
+        # Population genetics
         expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=REFERENCE_NAMES),
         [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
         expand(PI_OUTDIR / "{ref}.windowed.pi", ref=REFERENCE_NAMES),
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
+        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         AB_OUTDIR / "allelic_balance_summary.tsv",
-        expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
-        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SAMPLES),
+        expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         ROH_OUTDIR / "f_roh_summary.tsv"
 
 rule assemble_and_qc:
     input:
-        fastq=lambda wildcards: f"{LONG_READS_DIR}/{wildcards.sample}{LONG_READ_SUFFIX}"
+        fastq=lambda wildcards: LONG_READS[wildcards.sample]
     output:
         nanostat=ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt",
         nanoplot=directory(ASSEMBLY_OUTDIR / "nanoplot/{sample}"),
@@ -215,8 +231,8 @@ rule assemble_and_qc:
 
 rule call_svs:
     input:
-        reads=[f"{LONG_READS_DIR}/{sample}{LONG_READ_SUFFIX}" for sample in SAMPLES],
-        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in SAMPLES]
+        reads=[LONG_READS[sample] for sample in LONG_SAMPLES],
+        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in LONG_SAMPLES]
     output:
         survivor=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         jasmine=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
@@ -230,7 +246,6 @@ rule call_svs:
     params:
         script=SCRIPTS["call_svs"],
         reference=ALIGN_CONSPEC,
-        reads_dir=LONG_READS_DIR,
         assembly_dir=SV_ASSEMBLY_DIR,
         outdir=SV_OUTDIR,
         samples_file=SV_OUTDIR / "samples.txt",
@@ -361,8 +376,8 @@ rule index_hetspec:
 
 rule align_wgs:
     input:
-        fq1=lambda wildcards: f"{SHORT_READS_DIR}/{wildcards.sample}{SHORT_READ_R1_SUFFIX}",
-        fq2=lambda wildcards: f"{SHORT_READS_DIR}/{wildcards.sample}{SHORT_READ_R2_SUFFIX}",
+        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
+        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
         augref=ALIGN_AUGREF,
         augref_index=f"{ALIGN_AUGREF}.bwt",
         conspec=ALIGN_CONSPEC,
@@ -459,8 +474,8 @@ rule align_metrics_per_gam:
 
 rule align_metrics_summary:
     input:
-        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SAMPLES, ref=METRICS_REF_TYPES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SAMPLES)
+        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=METRICS_REF_TYPES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES)
     output:
         METRICS_OUTDIR / "alignment_metrics.tsv"
     conda:
@@ -579,12 +594,12 @@ rule vg_call:
         """
 
 def _gatk_vcfs_for_ref(wildcards):
-    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz" for sample in SAMPLES]
+    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz" for sample in SHORT_SAMPLES]
 
 rule merge_gatk_vcfs:
     input:
         vcfs=_gatk_vcfs_for_ref,
-        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz.tbi" for sample in SAMPLES]
+        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/{sample}.vcf.gz.tbi" for sample in SHORT_SAMPLES]
     output:
         vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
         tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
@@ -796,7 +811,7 @@ PY
 
 rule allelic_balance_summary:
     input:
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SAMPLES)
+        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES)
     output:
         AB_OUTDIR / "allelic_balance_summary.tsv"
     conda:
@@ -910,7 +925,7 @@ PY
 
 rule roh_summary:
     input:
-        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SAMPLES)
+        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES)
     output:
         ROH_OUTDIR / "f_roh_summary.tsv"
     conda:

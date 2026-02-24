@@ -4,18 +4,9 @@
 # INPUT DATA
 # ============================================================================
 inputs:
-  long_reads_dir: "/path/to/long_reads"
-  long_read_suffix: ".fastq"
-  short_reads_dir: "/path/to/illumina_reads"
-  short_read_r1_suffix: "_1.fastq.gz"
-  short_read_r2_suffix: "_2.fastq.gz"
-
-# ============================================================================
-# SAMPLES
-# ============================================================================
-samples:
-  - "sample1"
-  - "sample2"
+  reads_manifest: "reads_manifest.tsv"
+  # Manifest columns: sample_id, seq_type (long/short), platform, grouping, fastq_r1, fastq_r2
+  # R2 is only used for short reads (paired-end)
 
 # ============================================================================
 # REFERENCE GENOMES
@@ -31,12 +22,8 @@ references:
 # ============================================================================
 # POPULATION STRUCTURE
 # ============================================================================
-populations:
-  - name: "pop1"
-    samples: "/path/to/pop1_samples.txt"
-  - name: "pop2"
-    samples: "/path/to/pop2_samples.txt"
-
+# Populations are automatically extracted from the 'grouping' column in reads_manifest.tsv
+# FST/AFS analyses will be performed between these population pairs:
 population_pairs:
   - ["pop1", "pop2"]
 
@@ -54,7 +41,6 @@ sv_calling:
   outdir: "results/sv_calls"
   assembly_dir: "results/assemblies/flye"
   threads: 8
-  survivor_exec: "/path/to/SURVIVOR"
   min_sv_size: 50
   min_read_support: 3
   breakpoint_slop: 1000
