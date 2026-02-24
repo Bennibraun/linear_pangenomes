@@ -50,18 +50,13 @@ sv_calling:
 cactus:
   image: "docker://quay.io/comparative-genomics-toolkit/cactus:v2.9.9"
   bind: ""
-  jobstore: "/path/to/cactus/work"
-  seqfile: "/path/to/cactus/seqfile.txt"
-  outdir: "/path/to/cactus/output"
-  outname: "cactus_run"
-  reference: "reference_sample"
+  outname: "cactus_graph"
   max_cores: 8
   ref_contigs: ""
   extra_args: ""
 
 align_wgs:
   outdir: "results/wgs_alignments"
-  cactus_gbz: "/path/to/cactus/output/cactus_run.gbz"
   threads: 4
 
 align_metrics:
@@ -76,7 +71,6 @@ variant_calling:
   gatk:
     threads: 4
   vg:
-    graph_xg: "/path/to/cactus/output/cactus_run.xg"
     threads: 4
 
 fst_afs:

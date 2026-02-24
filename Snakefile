@@ -69,11 +69,11 @@ SV_FLANK = SV_CFG.get("flank", 200)
 CACTUS_CFG = config["cactus"]
 CACTUS_IMAGE = CACTUS_CFG["image"]
 CACTUS_BIND = CACTUS_CFG.get("bind", "")
-CACTUS_JOBSTORE = CACTUS_CFG["jobstore"]
-CACTUS_SEQFILE = CACTUS_CFG["seqfile"]
-CACTUS_OUTDIR = Path(CACTUS_CFG["outdir"])
-CACTUS_OUTNAME = CACTUS_CFG["outname"]
-CACTUS_REFERENCE = CACTUS_CFG["reference"]
+CACTUS_JOBSTORE = CACTUS_CFG.get("jobstore", "results/cactus_work")
+CACTUS_SEQFILE = Path("results") / "cactus_work" / "seqfile.txt"  # Auto-generated, not manual
+CACTUS_OUTDIR = Path(CACTUS_CFG.get("outdir", "results/cactus"))
+CACTUS_OUTNAME = CACTUS_CFG.get("outname", "cactus_graph")
+CACTUS_REFERENCE = CACTUS_CFG.get("reference", LONG_SAMPLES[0] if LONG_SAMPLES else "")
 CACTUS_MAX_CORES = CACTUS_CFG.get("max_cores", 8)
 CACTUS_REF_CONTIGS = CACTUS_CFG.get("ref_contigs", "")
 CACTUS_EXTRA_ARGS = CACTUS_CFG.get("extra_args", "")
@@ -96,7 +96,7 @@ GATK_CFG = VC_CFG["gatk"]
 VG_CFG = VC_CFG["vg"]
 VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
 GATK_THREADS = GATK_CFG.get("threads", 4)
-VG_XG = VG_CFG["graph_xg"]
+VG_XG = VG_CFG.get("graph_xg", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.xg"))
 VG_THREADS = VG_CFG.get("threads", 4)
 
 FST_CFG = config["fst_afs"]
@@ -248,7 +248,7 @@ rule call_svs:
         reference=ALIGN_CONSPEC,
         assembly_dir=SV_ASSEMBLY_DIR,
         outdir=SV_OUTDIR,
-        samples_file=SV_OUTDIR / "samples.txt",
+        samples=",".join(LONG_SAMPLES),
         survivor=SV_SURVIVOR,
         min_size=SV_MIN_SIZE,
         min_support=SV_MIN_SUPPORT,
@@ -259,17 +259,11 @@ rule call_svs:
         r"""
         set -euo pipefail
         mkdir -p {SV_OUTDIR}
-        python - <<'PY'
-from pathlib import Path
-samples = {SAMPLES}
-Path("{params.samples_file}").write_text("\n".join(samples) + "\n")
-PY
-
+        
         REFERENCE="{params.reference}" \
-        READS_DIR="{params.reads_dir}" \
         ASSEMBLY_DIR="{params.assembly_dir}" \
         OUTPUT_DIR="{params.outdir}" \
-        SAMPLES_FILE="{params.samples_file}" \
+        SAMPLES="{params.samples}" \
         SURVIVOR_EXEC="{params.survivor}" \
         MIN_SV_SIZE="{params.min_size}" \
         MIN_READ_SUPPORT="{params.min_support}" \
@@ -279,6 +273,17 @@ PY
         THREADS="{threads}" \
         bash {params.script}
         """
+
+rule generate_cactus_seqfile:
+    input:
+        assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
+    output:
+        seqfile=CACTUS_SEQFILE
+    run:
+        # Generate seqfile in cactus format: name /path/to/assembly.fasta
+        with open(output.seqfile, "w") as f:
+            for sample, assembly in zip(LONG_SAMPLES, input.assemblies):
+                f.write(f"{sample} {assembly}\n")
 
 rule make_cactus_graph:
     input:
@@ -323,55 +328,21 @@ rule make_cactus_graph:
         fi
         """
 
-rule index_augref:
+rule bwa_index:
     input:
-        ALIGN_AUGREF
+        fasta="{fasta}"
     output:
-        bwt=f"{ALIGN_AUGREF}.bwt",
-        amb=f"{ALIGN_AUGREF}.amb",
-        ann=f"{ALIGN_AUGREF}.ann",
-        pac=f"{ALIGN_AUGREF}.pac",
-        sa=f"{ALIGN_AUGREF}.sa"
+        bwt="{fasta}.bwt",
+        amb="{fasta}.amb",
+        ann="{fasta}.ann",
+        pac="{fasta}.pac",
+        sa="{fasta}.sa"
     conda:
         "envs/align_wgs.yaml"
     shell:
         r"""
         set -euo pipefail
-        bwa index {input}
-        """
-
-rule index_conspec:
-    input:
-        ALIGN_CONSPEC
-    output:
-        bwt=f"{ALIGN_CONSPEC}.bwt",
-        amb=f"{ALIGN_CONSPEC}.amb",
-        ann=f"{ALIGN_CONSPEC}.ann",
-        pac=f"{ALIGN_CONSPEC}.pac",
-        sa=f"{ALIGN_CONSPEC}.sa"
-    conda:
-        "envs/align_wgs.yaml"
-    shell:
-        r"""
-        set -euo pipefail
-        bwa index {input}
-        """
-
-rule index_hetspec:
-    input:
-        ALIGN_HETSPEC
-    output:
-        bwt=f"{ALIGN_HETSPEC}.bwt",
-        amb=f"{ALIGN_HETSPEC}.amb",
-        ann=f"{ALIGN_HETSPEC}.ann",
-        pac=f"{ALIGN_HETSPEC}.pac",
-        sa=f"{ALIGN_HETSPEC}.sa"
-    conda:
-        "envs/align_wgs.yaml"
-    shell:
-        r"""
-        set -euo pipefail
-        bwa index {input}
+        bwa index {input.fasta}
         """
 
 rule align_wgs:
@@ -669,25 +640,32 @@ PY
 rule fst_per_ref_pair:
     input:
         vcf=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi",
-        pop1=lambda wildcards: POP_SAMPLES[wildcards.pop1],
-        pop2=lambda wildcards: POP_SAMPLES[wildcards.pop2]
+        tbi=VC_OUTDIR / "gatk/{ref}/merged.vcf.gz.tbi"
     output:
         FST_OUTDIR / "fst/{ref}/{pop1}_vs_{pop2}.weir.fst"
     conda:
         "envs/fst_afs.yaml"
     params:
-        window_args=FST_WINDOW_ARGS
+        window_args=FST_WINDOW_ARGS,
+        pop1_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop1]),
+        pop2_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop2])
     shell:
         r"""
         set -euo pipefail
         mkdir -p {FST_OUTDIR}/fst/{wildcards.ref}
         prefix={FST_OUTDIR}/fst/{wildcards.ref}/{wildcards.pop1}_vs_{wildcards.pop2}
+        
+        # Create temporary population files
+        echo "{params.pop1_samples}" > /tmp/pop1_samples.txt
+        echo "{params.pop2_samples}" > /tmp/pop2_samples.txt
+        
         vcftools --gzvcf {input.vcf} \
-          --weir-fst-pop {input.pop1} \
-          --weir-fst-pop {input.pop2} \
+          --weir-fst-pop /tmp/pop1_samples.txt \
+          --weir-fst-pop /tmp/pop2_samples.txt \
           {params.window_args} \
           --out $prefix > /dev/null
+        
+        rm /tmp/pop1_samples.txt /tmp/pop2_samples.txt
         """
 
 rule pi_per_ref:

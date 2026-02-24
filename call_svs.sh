@@ -50,7 +50,6 @@ BREAKPOINT_SLOP=${BREAKPOINT_SLOP:-1000}  # For SURVIVOR merge
 JASMINE_SLOP=${JASMINE_SLOP:-500}      # For Jasmine merge
 
 # Directories
-READS_DIR=${READS_DIR:-"/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/fastq"}        # Directory containing ONT fastq files
 ASSEMBLY_DIR=${ASSEMBLY_DIR:-"/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/bee_paper/flye_assembly"}    # Directory containing Flye assembly fastas
 OUTPUT_DIR=${OUTPUT_DIR:-"/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/bee_paper/sv_calls"}
 READ_ALIGN_DIR="${OUTPUT_DIR}/read_alignments"
@@ -66,26 +65,8 @@ cd ${OUTPUT_DIR}
 mkdir -p ${READ_ALIGN_DIR} ${ASM_ALIGN_DIR} ${READ_CALLS_DIR} ${ASM_CALLS_DIR}
 mkdir -p ${MERGED_CALLS_DIR} ${CATALOG_DIR}
 
-if [[ -n "${SAMPLES_FILE:-}" && -f "${SAMPLES_FILE}" ]]; then
-    mapfile -t SAMPLES < "${SAMPLES_FILE}"
-else
-    SAMPLES=(
-        florida1.barcode10
-        florida2.barcode1
-        florida3.barcode2
-        florida4.barcode3
-        thailand1.barcode12
-        thailand2.barcode4
-        thailand4.barcode5
-        tokyo1.barcode11
-        tokyo2.barcode6
-        tokyo3.barcode7
-    )
-fi
-
-# SAMPLES=(
-#     tokyo3.barcode7
-# )
+# Parse SAMPLES from comma-separated list
+IFS=',' read -ra SAMPLES <<< "${SAMPLES}"
 
 ################################################################################
 # STEP 1: READ-BASED SV CALLING
