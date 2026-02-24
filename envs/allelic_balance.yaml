@@ -1,0 +1,8 @@
+name: linear-pangenomes-allelic-balance
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - pysam

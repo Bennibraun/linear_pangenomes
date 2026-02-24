@@ -1,16 +1,134 @@
 # Core configuration for the Snakemake prototype.
 # Update these paths on the cluster before running.
 
-marker_dir: "results/markers"
+assembly:
+  reads_dir: "/path/to/long_reads"
+  read_suffix: ".fastq"
+  samples:
+    - "sample1"
+  outdir: "results/assemblies"
+  genome_size: "225m"
+  lineage: "hymenoptera_odb10"
+  threads: 8
 
-datasets_file: "datasets.txt"
+sv_calling:
+  reference: "/path/to/reference.fasta"
+  reads_dir: "/path/to/long_reads"
+  read_suffix: ".fastq"
+  assembly_dir: "results/assemblies/flye"
+  samples:
+    - "sample1"
+  outdir: "results/sv_calls"
+  threads: 8
+  survivor_exec: "/path/to/SURVIVOR"
+  min_sv_size: 50
+  min_read_support: 3
+  breakpoint_slop: 1000
+  jasmine_slop: 500
+  flank: 200
 
-paths:
-  assembly_fastq: "/path/to/long_reads.fastq"
+cactus:
+  image: "docker://quay.io/comparative-genomics-toolkit/cactus:v2.9.9"
+  bind: ""
+  jobstore: "/path/to/cactus/work"
+  seqfile: "/path/to/cactus/seqfile.txt"
+  outdir: "/path/to/cactus/output"
+  outname: "cactus_run"
+  reference: "reference_sample"
+  max_cores: 8
+  ref_contigs: ""
+  extra_args: ""
+
+align_wgs:
+  reads_dir: "/path/to/illumina_reads"
+  r1_suffix: "_1.fastq.gz"
+  r2_suffix: "_2.fastq.gz"
+  samples:
+    - "sample1"
+  outdir: "results/wgs_alignments"
+  augref: "results/sv_calls/augref/augmented_reference.fasta"
+  conspec: "/path/to/conspecific_reference.fasta"
+  hetspec: "/path/to/heterospecific_reference.fasta"
+  cactus_gbz: "/path/to/cactus/output/cactus_run.gbz"
+  threads: 4
+
+align_metrics:
+  outdir: "results/align_metrics"
+  ref_types:
+    - "augref"
+    - "conspec"
+    - "hetspec"
+  include_gam: true
+  min_mapq: 0
+  min_baseq: 0
+  threads: 2
+
+variant_calling:
+  outdir: "results/variants"
+  gatk:
+    samples:
+      - "sample1"
+    threads: 4
+    references:
+      - name: "augref"
+        fasta: "results/sv_calls/augref/augmented_reference.fasta"
+      - name: "conspec"
+        fasta: "/path/to/conspecific_reference.fasta"
+      - name: "hetspec"
+        fasta: "/path/to/heterospecific_reference.fasta"
+  vg:
+    samples:
+      - "sample1"
+    graph_xg: "/path/to/cactus/output/cactus_run.xg"
+    threads: 4
+
+fst_afs:
+  outdir: "results/fst_afs"
+  populations:
+    - name: "pop1"
+      samples: "/path/to/pop1_samples.txt"
+    - name: "pop2"
+      samples: "/path/to/pop2_samples.txt"
+  pairs:
+    - pop1: "pop1"
+      pop2: "pop2"
+  window_size: 0
+  window_step: 0
+  afs_bins: [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
+
+pi:
+  outdir: "results/pi"
+  references:
+    - "augref"
+    - "conspec"
+    - "hetspec"
+  window_size: 10000
+  window_step: 5000
+
+allelic_balance:
+  outdir: "results/allelic_balance"
+  references:
+    - "augref"
+    - "conspec"
+    - "hetspec"
+  samples:
+    - "sample1"
+  bins: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+roh:
+  outdir: "results/roh"
+  references:
+    - "augref"
+    - "conspec"
+    - "hetspec"
+  samples:
+    - "sample1"
+  genome_lengths: {}
+  autosomes:
+    augref: []
+    conspec: []
+    hetspec: []
+  bcftools_args: ""
 
 scripts:
-  find_data_sra: "0.find_data_sra.py"
-  assemblies: "1.assemblies.sh"
-  call_svs: "2.call_SVs_and_filter.sh"
-  make_cactus_graph: "3.make_cactus_graph.sh"
-  align_wgs: "4.align_wgs.sh"
+  call_svs: "call_svs.sh"

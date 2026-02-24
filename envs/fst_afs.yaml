@@ -1,0 +1,10 @@
+name: linear-pangenomes-fst-afs
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - bcftools
+  - htslib
+  - vcftools

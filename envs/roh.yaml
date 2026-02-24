@@ -1,0 +1,9 @@
+name: linear-pangenomes-roh
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - bcftools
+  - htslib
+  - python=3.11

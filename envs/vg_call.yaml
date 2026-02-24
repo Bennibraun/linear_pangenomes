@@ -1,0 +1,9 @@
+name: linear-pangenomes-vg-call
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - vg
+  - htslib
+  - bcftools

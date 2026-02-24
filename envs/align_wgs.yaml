@@ -1,0 +1,9 @@
+name: linear-pangenomes-align-wgs
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - bwa
+  - samtools
+  - vg

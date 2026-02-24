@@ -1,0 +1,12 @@
+name: linear-pangenomes-assembly
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - nanostat
+  - nanoplot
+  - flye
+  - quast
+  - busco

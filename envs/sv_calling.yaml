@@ -1,0 +1,16 @@
+name: linear-pangenomes-sv-calling
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - pysam
+  - minimap2
+  - samtools
+  - bcftools
+  - sniffles
+  - cutesv
+  - survivor
+  - jasmine
+  - cd-hit

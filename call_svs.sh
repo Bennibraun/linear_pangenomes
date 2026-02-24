@@ -28,27 +28,31 @@
 
 # Usage: ./2.call_SVs_and_filter.sh
 
-eval "$(conda shell.bash hook)"
-conda activate apis_ont
+if [[ -z "${SNAKEMAKE_CONDA_PREFIX:-}" ]]; then
+    eval "$(conda shell.bash hook)"
+    conda activate apis_ont
+fi
 
 # On Fiji, bcftools and samtools don't have the necessary libraries linked.
 # Instead load the available modules for these.
-module load samtools bcftools
+if command -v module >/dev/null 2>&1; then
+    module load samtools bcftools
+fi
 
 
 # Configuration
-THREADS=8
-REFERENCE="/Users/bebr1814/scratch/chuong_data/reference/GCF_003254395.2/GCF_003254395.2_Amel_HAv3.1_genomic.fna"
-SURVIVOR_EXEC="/Users/bebr1814/software/SURVIVOR-master/Debug/SURVIVOR"
-MIN_SV_SIZE=50
-MIN_READ_SUPPORT=3
-BREAKPOINT_SLOP=1000  # For SURVIVOR merge
-JASMINE_SLOP=500      # For Jasmine merge
+THREADS=${THREADS:-8}
+REFERENCE=${REFERENCE:-"/Users/bebr1814/scratch/chuong_data/reference/GCF_003254395.2/GCF_003254395.2_Amel_HAv3.1_genomic.fna"}
+SURVIVOR_EXEC=${SURVIVOR_EXEC:-"/Users/bebr1814/software/SURVIVOR-master/Debug/SURVIVOR"}
+MIN_SV_SIZE=${MIN_SV_SIZE:-50}
+MIN_READ_SUPPORT=${MIN_READ_SUPPORT:-3}
+BREAKPOINT_SLOP=${BREAKPOINT_SLOP:-1000}  # For SURVIVOR merge
+JASMINE_SLOP=${JASMINE_SLOP:-500}      # For Jasmine merge
 
 # Directories
-READS_DIR="/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/fastq"        # Directory containing ONT fastq files
-ASSEMBLY_DIR="/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/bee_paper/flye_assembly"    # Directory containing Flye assembly fastas
-OUTPUT_DIR="/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/bee_paper/sv_calls"
+READS_DIR=${READS_DIR:-"/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/fastq"}        # Directory containing ONT fastq files
+ASSEMBLY_DIR=${ASSEMBLY_DIR:-"/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/bee_paper/flye_assembly"}    # Directory containing Flye assembly fastas
+OUTPUT_DIR=${OUTPUT_DIR:-"/Users/bebr1814/scratch/chuong_data/20250211_1135_P2S-00613-A_PBA08559_66fdcccd/uncorrected_fastq/bee_paper/sv_calls"}
 READ_ALIGN_DIR="${OUTPUT_DIR}/read_alignments"
 ASM_ALIGN_DIR="${OUTPUT_DIR}/assembly_alignments"
 READ_CALLS_DIR="${OUTPUT_DIR}/read_sv_calls"
@@ -62,18 +66,22 @@ cd ${OUTPUT_DIR}
 mkdir -p ${READ_ALIGN_DIR} ${ASM_ALIGN_DIR} ${READ_CALLS_DIR} ${ASM_CALLS_DIR}
 mkdir -p ${MERGED_CALLS_DIR} ${CATALOG_DIR}
 
-SAMPLES=(
-    florida1.barcode10
-    florida2.barcode1
-    florida3.barcode2
-    florida4.barcode3
-    thailand1.barcode12
-    thailand2.barcode4
-    thailand4.barcode5
-    tokyo1.barcode11
-    tokyo2.barcode6
-    tokyo3.barcode7
-)
+if [[ -n "${SAMPLES_FILE:-}" && -f "${SAMPLES_FILE}" ]]; then
+    mapfile -t SAMPLES < "${SAMPLES_FILE}"
+else
+    SAMPLES=(
+        florida1.barcode10
+        florida2.barcode1
+        florida3.barcode2
+        florida4.barcode3
+        thailand1.barcode12
+        thailand2.barcode4
+        thailand4.barcode5
+        tokyo1.barcode11
+        tokyo2.barcode6
+        tokyo3.barcode7
+    )
+fi
 
 # SAMPLES=(
 #     tokyo3.barcode7
@@ -378,7 +386,7 @@ echo "  Support matrix: ${CATALOG_DIR}/sv_support_matrix.txt"
 
 # Extract the sequences of SV insertions - including a 200bp flank on either end
 mkdir -p $OUTPUT_DIR/augref
-python 2.1.extract_svs.py -v ${CATALOG_DIR}/pan_sample_catalog.survivor.vcf -r $REFERENCE --flank 200 -o $OUTPUT_DIR/augref/extracted_flanked_sv_seqs.fasta
+python extract_sv_sequences.py -v ${CATALOG_DIR}/pan_sample_catalog.survivor.vcf -r $REFERENCE --flank ${FLANK} -o $OUTPUT_DIR/augref/extracted_flanked_sv_seqs.fasta
 
 # Deduplicate sequences to avoid redundancy in the augmented reference
 cd-hit-est -i $OUTPUT_DIR/augref/extracted_flanked_sv_seqs.fasta -o $OUTPUT_DIR/augref/extracted_flanked_sv_seqs.dedup.fasta -c 0.95 -n 10
