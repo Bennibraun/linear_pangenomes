@@ -3,18 +3,20 @@ from pathlib import Path
 configfile: "config/config.yaml"
 
 SCRIPTS = config["scripts"]
+INPUTS_CFG = config["inputs"]
+LONG_READS_DIR = INPUTS_CFG["long_reads_dir"]
+LONG_READ_SUFFIX = INPUTS_CFG.get("long_read_suffix", ".fastq")
+SHORT_READS_DIR = INPUTS_CFG["short_reads_dir"]
+SHORT_READ_R1_SUFFIX = INPUTS_CFG.get("short_read_r1_suffix", "_1.fastq.gz")
+SHORT_READ_R2_SUFFIX = INPUTS_CFG.get("short_read_r2_suffix", "_2.fastq.gz")
 ASSEMBLY_CFG = config["assembly"]
 ASSEMBLY_OUTDIR = Path(ASSEMBLY_CFG.get("outdir", "results/assemblies"))
 ASSEMBLY_SAMPLES = ASSEMBLY_CFG["samples"]
-ASSEMBLY_READS_DIR = ASSEMBLY_CFG["reads_dir"]
-ASSEMBLY_READ_SUFFIX = ASSEMBLY_CFG.get("read_suffix", ".fastq")
 ASSEMBLY_GENOME_SIZE = ASSEMBLY_CFG.get("genome_size", "225m")
 ASSEMBLY_LINEAGE = ASSEMBLY_CFG.get("lineage", "hymenoptera_odb10")
 ASSEMBLY_THREADS = ASSEMBLY_CFG.get("threads", 1)
 SV_CFG = config["sv_calling"]
 SV_OUTDIR = Path(SV_CFG.get("outdir", "results/sv_calls"))
-SV_READS_DIR = SV_CFG["reads_dir"]
-SV_READ_SUFFIX = SV_CFG.get("read_suffix", ".fastq")
 SV_ASSEMBLY_DIR = SV_CFG.get("assembly_dir", str(ASSEMBLY_OUTDIR / "flye"))
 SV_SAMPLES = SV_CFG["samples"]
 SV_THREADS = SV_CFG.get("threads", 8)
@@ -39,9 +41,6 @@ CACTUS_EXTRA_ARGS = CACTUS_CFG.get("extra_args", "")
 ALIGN_CFG = config["align_wgs"]
 ALIGN_OUTDIR = Path(ALIGN_CFG.get("outdir", "results/wgs_alignments"))
 ALIGN_SAMPLES = ALIGN_CFG["samples"]
-ALIGN_READS_DIR = ALIGN_CFG["reads_dir"]
-ALIGN_R1_SUFFIX = ALIGN_CFG.get("r1_suffix", "_1.fastq.gz")
-ALIGN_R2_SUFFIX = ALIGN_CFG.get("r2_suffix", "_2.fastq.gz")
 ALIGN_AUGREF = ALIGN_CFG.get("augref", str(SV_OUTDIR / "augref/augmented_reference.fasta"))
 ALIGN_CONSPEC = REF_CFG["conspec"]
 ALIGN_HETSPEC = REF_CFG["hetspec"]
@@ -141,7 +140,7 @@ rule all:
 
 rule assemble_and_qc:
     input:
-        fastq=lambda wildcards: f"{ASSEMBLY_READS_DIR}/{wildcards.sample}{ASSEMBLY_READ_SUFFIX}"
+        fastq=lambda wildcards: f"{LONG_READS_DIR}/{wildcards.sample}{LONG_READ_SUFFIX}"
     output:
         nanostat=ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt",
         nanoplot=directory(ASSEMBLY_OUTDIR / "nanoplot/{sample}"),
@@ -195,7 +194,7 @@ rule assemble_and_qc:
 
 rule call_svs:
     input:
-        reads=[f"{SV_READS_DIR}/{sample}{SV_READ_SUFFIX}" for sample in SV_SAMPLES],
+        reads=[f"{LONG_READS_DIR}/{sample}{LONG_READ_SUFFIX}" for sample in SV_SAMPLES],
         assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in SV_SAMPLES]
     output:
         survivor=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
@@ -210,7 +209,7 @@ rule call_svs:
     params:
         script=SCRIPTS["call_svs"],
         reference=ALIGN_CONSPEC,
-        reads_dir=SV_READS_DIR,
+        reads_dir=LONG_READS_DIR,
         assembly_dir=SV_ASSEMBLY_DIR,
         outdir=SV_OUTDIR,
         samples_file=SV_OUTDIR / "samples.txt",
@@ -341,8 +340,8 @@ rule index_hetspec:
 
 rule align_wgs:
     input:
-        fq1=lambda wildcards: f"{ALIGN_READS_DIR}/{wildcards.sample}{ALIGN_R1_SUFFIX}",
-        fq2=lambda wildcards: f"{ALIGN_READS_DIR}/{wildcards.sample}{ALIGN_R2_SUFFIX}",
+        fq1=lambda wildcards: f"{SHORT_READS_DIR}/{wildcards.sample}{SHORT_READ_R1_SUFFIX}",
+        fq2=lambda wildcards: f"{SHORT_READS_DIR}/{wildcards.sample}{SHORT_READ_R2_SUFFIX}",
         augref=ALIGN_AUGREF,
         augref_index=f"{ALIGN_AUGREF}.bwt",
         conspec=ALIGN_CONSPEC,

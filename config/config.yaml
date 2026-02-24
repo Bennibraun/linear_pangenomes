@@ -1,9 +1,14 @@
 # Core configuration for the Snakemake prototype.
 # Update these paths on the cluster before running.
 
+inputs:
+  long_reads_dir: "/path/to/long_reads"
+  long_read_suffix: ".fastq"
+  short_reads_dir: "/path/to/illumina_reads"
+  short_read_r1_suffix: "_1.fastq.gz"
+  short_read_r2_suffix: "_2.fastq.gz"
+
 assembly:
-  reads_dir: "/path/to/long_reads"
-  read_suffix: ".fastq"
   samples:
     - "sample1"
   outdir: "results/assemblies"
@@ -12,8 +17,6 @@ assembly:
   threads: 8
 
 sv_calling:
-  reads_dir: "/path/to/long_reads"
-  read_suffix: ".fastq"
   assembly_dir: "results/assemblies/flye"
   samples:
     - "sample1"
@@ -43,9 +46,6 @@ references:
   hetspec: "/path/to/heterospecific_reference.fasta"
 
 align_wgs:
-  reads_dir: "/path/to/illumina_reads"
-  r1_suffix: "_1.fastq.gz"
-  r2_suffix: "_2.fastq.gz"
   samples:
     - "sample1"
   outdir: "results/wgs_alignments"
