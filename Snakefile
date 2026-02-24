@@ -484,9 +484,9 @@ def _ref_lengths_path(wildcards):
 
 rule ref_fai:
     input:
-        fasta=_gatk_ref_fasta
+        fasta=lambda wildcards: _gatk_ref_fasta(wildcards)
     output:
-        _gatk_ref_fai
+        fai=lambda wildcards: _gatk_ref_fai(wildcards)
     conda:
         "envs/gatk.yaml"
     shell:
@@ -497,24 +497,24 @@ rule ref_fai:
 
 rule ref_dict:
     input:
-        fasta=_gatk_ref_fasta
+        fasta=lambda wildcards: _gatk_ref_fasta(wildcards)
     output:
-        _gatk_ref_dict
+        dict=lambda wildcards: _gatk_ref_dict(wildcards)
     conda:
         "envs/gatk.yaml"
     shell:
         r"""
         set -euo pipefail
-        gatk CreateSequenceDictionary -R {input.fasta} -O {output}
+        gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
         """
 
 rule gatk_haplotypecaller:
     input:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam.bai",
-        fasta=_gatk_ref_fasta,
-        fai=_gatk_ref_fai,
-        dict=_gatk_ref_dict
+        fasta=lambda wildcards: _gatk_ref_fasta(wildcards),
+        fai=lambda wildcards: _gatk_ref_fai(wildcards),
+        dict=lambda wildcards: _gatk_ref_dict(wildcards)
     output:
         vcf=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "gatk/{ref}/{sample}.vcf.gz.tbi"
