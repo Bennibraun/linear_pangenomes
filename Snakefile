@@ -189,7 +189,7 @@ rule assemble_and_qc:
         ASSEMBLY_THREADS
     resources:
         slurm_partition="long",
-        slurm_time=1440,
+        runtime=1440,
         mem_mb=32000,
         cpus=ASSEMBLY_THREADS
     params:
@@ -249,7 +249,7 @@ rule call_svs:
         SV_THREADS
     resources:
         slurm_partition="long",
-        slurm_time=1440,
+        runtime=1440,
         mem_mb=32000,
         cpus=SV_THREADS
     params:
@@ -285,12 +285,20 @@ rule call_svs:
 
 rule generate_cactus_seqfile:
     input:
+        reference=ALIGN_CONSPEC,
         assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
     output:
         seqfile=CACTUS_SEQFILE
+    params:
+        ref_name=CACTUS_REFERENCE
     run:
-        # Generate seqfile in cactus format: name /path/to/assembly.fasta
+        # Generate seqfile in cactus format with reference as backbone
+        # First line: reference_name /path/to/reference.fasta
+        # Following lines: sample_name /path/to/assembly.fasta
         with open(output.seqfile, "w") as f:
+            # Write reference first (backbone)
+            f.write(f"{params.ref_name} {input.reference}\n")
+            # Write assemblies
             for sample, assembly in zip(LONG_SAMPLES, input.assemblies):
                 f.write(f"{sample} {assembly}\n")
 
@@ -307,7 +315,7 @@ rule make_cactus_graph:
         CACTUS_MAX_CORES
     resources:
         slurm_partition="highmem",
-        slurm_time=2880,
+        runtime=2880,
         mem_mb=128000,
         cpus=CACTUS_MAX_CORES
     params:
@@ -382,7 +390,7 @@ rule align_wgs:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        slurm_time=960,
+        runtime=960,
         mem_mb=16000,
         cpus=ALIGN_THREADS
     shell:
@@ -417,7 +425,7 @@ rule align_metrics_per_bam:
         METRICS_THREADS
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=METRICS_THREADS
     params:
@@ -452,7 +460,7 @@ rule align_metrics_per_gam:
         METRICS_THREADS
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=METRICS_THREADS
     shell:
@@ -480,7 +488,7 @@ rule align_metrics_summary:
         "envs/align_metrics.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=60,
+        runtime=60,
         mem_mb=2000,
         cpus=1
     run:
@@ -532,7 +540,7 @@ rule index_augref:
         "envs/index.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=8000,
         cpus=1
     shell:
@@ -558,7 +566,7 @@ rule index_conspec:
         "envs/index.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=8000,
         cpus=1
     shell:
@@ -584,7 +592,7 @@ rule index_hetspec:
         "envs/index.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=8000,
         cpus=1
     shell:
@@ -611,7 +619,7 @@ rule gatk_haplotypecaller:
         GATK_THREADS
     resources:
         slurm_partition="short",
-        slurm_time=240,
+        runtime=240,
         mem_mb=8000,
         cpus=GATK_THREADS
     shell:
@@ -638,7 +646,7 @@ rule vg_call:
         VG_THREADS
     resources:
         slurm_partition="long",
-        slurm_time=480,
+        runtime=480,
         mem_mb=16000,
         cpus=VG_THREADS
     shell:
@@ -666,7 +674,7 @@ rule merge_gatk_vcfs:
         "envs/fst_afs.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=1
     shell:
@@ -689,7 +697,7 @@ rule afs_per_ref:
         bins=AFS_BINS
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=1
     run:
@@ -751,7 +759,7 @@ rule fst_per_ref_pair:
         pop2_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop2])
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=1
     shell:
@@ -786,7 +794,7 @@ rule pi_per_ref:
         window_step=PI_WINDOW_STEP
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=1
     shell:
@@ -812,7 +820,7 @@ rule allelic_balance_per_sample:
         bins=AB_BINS
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=1
     run:
@@ -889,7 +897,7 @@ rule allelic_balance_summary:
         "envs/allelic_balance.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=60,
+        runtime=60,
         mem_mb=2000,
         cpus=1
     run:
@@ -922,7 +930,7 @@ rule roh_per_sample:
         bcftools_args=ROH_BCFTOOLS_ARGS
     resources:
         slurm_partition="short",
-        slurm_time=120,
+        runtime=120,
         mem_mb=4000,
         cpus=1
     run:
@@ -1012,7 +1020,7 @@ rule roh_summary:
         "envs/roh.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=60,
+        runtime=60,
         mem_mb=2000,
         cpus=1
     run:
@@ -1040,7 +1048,7 @@ rule ref_lengths:
         "envs/roh.yaml"
     resources:
         slurm_partition="short",
-        slurm_time=60,
+        runtime=60,
         mem_mb=2000,
         cpus=1
     shell:
