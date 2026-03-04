@@ -72,7 +72,6 @@ CACTUS_JOBSTORE = CACTUS_CFG.get("jobstore", "results/cactus_work")
 CACTUS_SEQFILE = Path("results") / "cactus_work" / "seqfile.txt"  # Auto-generated, not manual
 CACTUS_OUTDIR = Path(CACTUS_CFG.get("outdir", "results/cactus"))
 CACTUS_OUTNAME = CACTUS_CFG.get("outname", "cactus_graph")
-CACTUS_REFERENCE = CACTUS_CFG.get("reference", "reference")
 CACTUS_MAX_CORES = CACTUS_CFG.get("max_cores", 8)
 CACTUS_REF_CONTIGS = CACTUS_CFG.get("ref_contigs", "")
 CACTUS_EXTRA_ARGS = CACTUS_CFG.get("extra_args", "")
@@ -289,15 +288,13 @@ rule generate_cactus_seqfile:
         assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
     output:
         seqfile=CACTUS_SEQFILE
-    params:
-        ref_name=CACTUS_REFERENCE
     run:
         # Generate seqfile in cactus format with reference as backbone
-        # First line: reference_name /path/to/reference.fasta
+        # First line: reference /path/to/reference.fasta
         # Following lines: sample_name /path/to/assembly.fasta
         with open(output.seqfile, "w") as f:
             # Write reference first (backbone)
-            f.write(f"{params.ref_name} {input.reference}\n")
+            f.write(f"reference {input.reference}\n")
             # Write assemblies
             for sample, assembly in zip(LONG_SAMPLES, input.assemblies):
                 f.write(f"{sample} {assembly}\n")
@@ -322,7 +319,6 @@ rule make_cactus_graph:
         jobstore=CACTUS_JOBSTORE,
         outdir=CACTUS_OUTDIR,
         outname=CACTUS_OUTNAME,
-        reference=CACTUS_REFERENCE,
         ref_contigs=CACTUS_REF_CONTIGS,
         extra_args=CACTUS_EXTRA_ARGS
     shell:
@@ -332,7 +328,7 @@ rule make_cactus_graph:
         cactus-pangenome \
           {params.jobstore} \
           {input.seqfile} \
-          --reference "{params.reference}" \
+          --reference "reference" \
           --collapse \
           --outDir {params.outdir} \
           --outName "{params.outname}" \
