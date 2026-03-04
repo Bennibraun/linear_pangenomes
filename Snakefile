@@ -323,6 +323,7 @@ rule make_cactus_graph:
         r"""
         set -euo pipefail
         mkdir -p {params.outdir}
+        rm -rf {params.jobstore}
         cactus-pangenome \
           {params.jobstore} \
           {input.seqfile} \
