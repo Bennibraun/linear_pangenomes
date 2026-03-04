@@ -95,6 +95,3 @@ roh:
     conspec: []
     hetspec: []
   bcftools_args: ""
-
-scripts:
-  call_svs: "call_svs.sh"

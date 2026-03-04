@@ -3,8 +3,6 @@ import pandas as pd
 
 configfile: "config/config.yaml"
 
-SCRIPTS = config["scripts"]
-
 # ============================================================================
 # Parse reads manifest (TSV with columns: sample_id, seq_type, platform, grouping, fastq_r1, fastq_r2)
 # ============================================================================
@@ -252,7 +250,7 @@ rule call_svs:
         mem_mb=32000,
         cpus=SV_THREADS
     params:
-        script=SCRIPTS["call_svs"],
+        script="call_svs.sh",
         reference=ALIGN_CONSPEC,
         assembly_dir=SV_ASSEMBLY_DIR,
         outdir=SV_OUTDIR,
