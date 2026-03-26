@@ -182,57 +182,124 @@ rule all:
         expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         ROH_OUTDIR / "f_roh_summary.tsv"
 
-rule assemble_and_qc:
+rule nanostat:
     input:
-        fastq=lambda wildcards: LONG_READS[wildcards.sample]
+        fastq=lambda wildcards: LONG_READS[wildcards.sample],
     output:
-        nanostat=ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt",
-        nanoplot=directory(ASSEMBLY_OUTDIR / "nanoplot/{sample}"),
-        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
-        quast=directory(ASSEMBLY_OUTDIR / "quast/{sample}"),
-        busco=directory(ASSEMBLY_OUTDIR / "busco/{sample}")
+        stats=ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt",
     conda:
         "envs/assembly.yaml"
-    threads:
-        ASSEMBLY_THREADS
+    threads: 4
     resources:
-        slurm_partition="long",
-        runtime=1440,
-        mem_mb=32000,
-        cpus=ASSEMBLY_THREADS
-    params:
-        genome_size=ASSEMBLY_GENOME_SIZE,
-        lineage=ASSEMBLY_LINEAGE
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=4,
     shell:
         r"""
         set -euo pipefail
-        mkdir -p {ASSEMBLY_OUTDIR}/nanostat {ASSEMBLY_OUTDIR}/nanoplot {ASSEMBLY_OUTDIR}/flye {ASSEMBLY_OUTDIR}/quast {ASSEMBLY_OUTDIR}/busco
-
         NanoStat \
           --fastq {input.fastq} \
           --name {wildcards.sample}_nanostat.txt \
           --outdir {ASSEMBLY_OUTDIR}/nanostat \
           --threads {threads}
+        """
 
+
+rule nanoplot:
+    input:
+        fastq=lambda wildcards: LONG_READS[wildcards.sample],
+    output:
+        outdir=directory(ASSEMBLY_OUTDIR / "nanoplot/{sample}"),
+    conda:
+        "envs/assembly.yaml"
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=4,
+    shell:
+        r"""
+        set -euo pipefail
         NanoPlot \
           --fastq {input.fastq} \
           --prefix {wildcards.sample} \
-          --outdir {output.nanoplot} \
+          --outdir {output.outdir} \
           --threads {threads}
+        """
 
+
+rule flye_assemble:
+    input:
+        fastq=lambda wildcards: LONG_READS[wildcards.sample],
+    output:
+        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
+    conda:
+        "envs/assembly.yaml"
+    threads: ASSEMBLY_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=1440,
+        mem_mb=32000,
+        cpus=ASSEMBLY_THREADS,
+    params:
+        genome_size=ASSEMBLY_GENOME_SIZE,
+        outdir=lambda wildcards: ASSEMBLY_OUTDIR / f"flye/{wildcards.sample}",
+    shell:
+        r"""
+        set -euo pipefail
         flye \
           --nano-hq {input.fastq} \
-          --out-dir {ASSEMBLY_OUTDIR}/flye/{wildcards.sample} \
+          --out-dir {params.outdir} \
           --genome-size {params.genome_size} \
           --threads {threads}
+        """
 
+
+rule quast_assembly:
+    input:
+        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
+    output:
+        outdir=directory(ASSEMBLY_OUTDIR / "quast/{sample}"),
+    conda:
+        "envs/assembly.yaml"
+    threads: 8
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=8,
+    shell:
+        r"""
+        set -euo pipefail
         quast \
-          {output.assembly} \
+          {input.assembly} \
           -t {threads} \
-          -o {output.quast}
+          -o {output.outdir}
+        """
 
+
+rule busco_assembly:
+    input:
+        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
+    output:
+        outdir=directory(ASSEMBLY_OUTDIR / "busco/{sample}"),
+    conda:
+        "envs/assembly.yaml"
+    threads: ASSEMBLY_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=16000,
+        cpus=ASSEMBLY_THREADS,
+    params:
+        lineage=ASSEMBLY_LINEAGE,
+    shell:
+        r"""
+        set -euo pipefail
         busco \
-          -i {output.assembly} \
+          -i {input.assembly} \
           -m genome \
           --lineage_dataset {params.lineage} \
           -c {threads} \
@@ -241,68 +308,96 @@ rule assemble_and_qc:
           -f
         """
 
-CACTUS_READS_TSV = Path("results") / "sv_calls" / "reads.tsv"
+include: "rules/sv_calling.smk"
 
-rule generate_reads_tsv:
+# ---------------------------------------------------------------------------
+# Post-processing: Build augmented reference from pan-sample SV catalog
+# ---------------------------------------------------------------------------
+rule sv_extract_sequences:
     input:
-        reads=[LONG_READS[sample] for sample in LONG_SAMPLES]
+        vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
+        reference=ALIGN_CONSPEC,
     output:
-        CACTUS_READS_TSV
-    run:
-        with open(output[0], "w") as f:
-            for sample in LONG_SAMPLES:
-                f.write(f"{sample}\t{LONG_READS[sample]}\n")
-
-rule call_svs:
-    input:
-        reads=[LONG_READS[sample] for sample in LONG_SAMPLES],
-        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in LONG_SAMPLES],
-        reads_tsv=CACTUS_READS_TSV
-    output:
-        survivor=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
-        jasmine=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
-        stats=SV_OUTDIR / "pan_sample_catalog/catalog_stats.txt",
-        support=SV_OUTDIR / "pan_sample_catalog/sv_support_matrix.txt",
-        augref=SV_OUTDIR / "augref/augmented_reference.fasta"
+        fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.fasta",
     conda:
         "envs/sv_calling.yaml"
-    threads:
-        SV_THREADS
-    resources:
-        slurm_partition="long",
-        runtime=1440,
-        mem_mb=32000,
-        cpus=SV_THREADS
     params:
-        script=ancient(Path(workflow.basedir) / "call_svs.sh"),
-        reference=ALIGN_CONSPEC,
-        assembly_dir=SV_ASSEMBLY_DIR,
-        outdir=SV_OUTDIR,
-        samples=",".join(LONG_SAMPLES),
-        survivor=SV_SURVIVOR,
-        min_size=SV_MIN_SIZE,
-        min_support=SV_MIN_SUPPORT,
-        breakpoint_slop=SV_BREAKPOINT_SLOP,
-        jasmine_slop=SV_JASMINE_SLOP,
-        flank=SV_FLANK
+        flank=SV_FLANK,
+        min_ins=SV_MIN_SIZE,
+    run:
+        import pysam
+
+        vcf = pysam.VariantFile(input.vcf)
+        reference = pysam.FastaFile(input.reference)
+        flank_size = params.flank
+        min_ins = params.min_ins
+        samples = LONG_SAMPLES
+
+        count = 0
+        seen_headers = {}
+        with open(output.fasta, "w") as out:
+            for record in vcf:
+                alt_seq = record.alts[0]
+                ref_allele = record.ref
+                if len(alt_seq) <= len(ref_allele) or alt_seq.startswith("<"):
+                    continue
+                ins_len = len(alt_seq) - len(ref_allele)
+                if ins_len < min_ins:
+                    continue
+
+                novel_part = alt_seq[len(ref_allele):]
+                chrom = record.chrom
+                pos = record.pos
+
+                try:
+                    left_flank = reference.fetch(chrom, max(0, pos - flank_size), pos)
+                    right_flank = reference.fetch(chrom, pos, pos + flank_size)
+                except KeyError:
+                    continue  # chromosome name doesn't match reference
+
+                supp_vec = record.info.get("SUPP_VEC", "")
+                sample_name = "unknown"
+                for i, val in enumerate(supp_vec):
+                    if val == "1" and i < len(samples):
+                        sample_name = samples[i]
+                        break
+
+                full_seq = left_flank + novel_part + right_flank
+                base_name = f"SV_{chrom}_{pos}_{sample_name}_ins{ins_len}"
+                if base_name in seen_headers:
+                    seen_headers[base_name] += 1
+                    header = f">{base_name}_dup{seen_headers[base_name]}"
+                else:
+                    seen_headers[base_name] = 0
+                    header = f">{base_name}"
+                out.write(f"{header}\n{full_seq}\n")
+                count += 1
+
+        print(f"Extracted {count} flanked sequences to {output.fasta}")
+
+rule sv_dedup_sequences:
+    input:
+        fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.fasta",
+    output:
+        fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.dedup.fasta",
+    conda:
+        "envs/sv_calling.yaml"
     shell:
         r"""
         set -euo pipefail
-        mkdir -p {SV_OUTDIR}
+        cd-hit-est -i {input.fasta} -o {output.fasta} -c 0.95 -n 10
+        """
 
-        REFERENCE="{params.reference}" \
-        READS_TSV="$(realpath {input.reads_tsv})" \
-        ASSEMBLY_DIR="{params.assembly_dir}" \
-        OUTPUT_DIR="{params.outdir}" \
-        SAMPLES="{params.samples}" \
-        SURVIVOR_EXEC="{params.survivor}" \
-        MIN_SV_SIZE="{params.min_size}" \
-        MIN_READ_SUPPORT="{params.min_support}" \
-        BREAKPOINT_SLOP="{params.breakpoint_slop}" \
-        JASMINE_SLOP="{params.jasmine_slop}" \
-        FLANK="{params.flank}" \
-        THREADS="{threads}" \
-        bash {params.script}
+rule sv_build_augmented_reference:
+    input:
+        reference=ALIGN_CONSPEC,
+        sv_seqs=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.dedup.fasta",
+    output:
+        augref=SV_OUTDIR / "augref/augmented_reference.fasta",
+    shell:
+        r"""
+        set -euo pipefail
+        cat {input.reference} {input.sv_seqs} > {output.augref}
         """
 
 CACTUS_STAGED_REF = Path("results") / "cactus_work" / "reference.fasta"
@@ -547,11 +642,6 @@ def _gatk_ref_fai(wildcards):
 def _gatk_ref_dict(wildcards):
     return str(Path(_gatk_ref_fasta(wildcards)).with_suffix(".dict"))
 
-def _ref_lengths_path(wildcards):
-    if wildcards.ref in ROH_GENOME_LENGTHS:
-        return ROH_GENOME_LENGTHS[wildcards.ref]
-    return str(ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv")
-
 rule index_augref:
     input:
         fasta=ALIGN_AUGREF
@@ -712,375 +802,4 @@ rule merge_gatk_vcfs:
         tabix -p vcf {output.vcf}
         """
 
-rule afs_per_ref:
-    input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
-    output:
-        afs=FST_OUTDIR / "afs/{ref}.afs.tsv"
-    conda:
-        "envs/fst_afs.yaml"
-    params:
-        bins=AFS_BINS
-    resources:
-        slurm_partition="short",
-        runtime=120,
-        mem_mb=4000,
-        cpus=1
-    run:
-        from pathlib import Path
-        import subprocess
-        
-        out_path = Path(output.afs)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        freq_prefix = Path(output.afs).parent / "freq_tmp"
-        subprocess.run(
-            f"vcftools --gzvcf {input.vcf} --freq2 --out {freq_prefix}",
-            shell=True, check=True, capture_output=True
-        )
-        
-        freq_path = freq_prefix.with_suffix(".frq")
-        bins = params.bins
-        counts = [0 for _ in range(len(bins) - 1)]
-        
-        for line in freq_path.read_text().strip().splitlines()[1:]:
-            parts = line.split()
-            if len(parts) < 6:
-                continue
-            freqs = []
-            for item in parts[5:]:
-                if ":" not in item:
-                    continue
-                try:
-                    freqs.append(float(item.split(":")[1]))
-                except ValueError:
-                    continue
-            if not freqs:
-                continue
-            maf = min(freqs)
-            for i in range(len(bins) - 1):
-                if bins[i] <= maf < bins[i + 1]:
-                    counts[i] += 1
-                    break
-        
-        out_path.write_text("bin_low\tbin_high\tcount\n")
-        with out_path.open("a") as handle:
-            for i in range(len(counts)):
-                handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
-        
-        freq_path.unlink(missing_ok=True)
-        freq_prefix.with_suffix(".log").unlink(missing_ok=True)
-
-rule fst_per_ref_pair:
-    input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
-    output:
-        FST_OUTDIR / "fst/{ref}/{pop1}_vs_{pop2}.weir.fst"
-    conda:
-        "envs/fst_afs.yaml"
-    params:
-        window_args=FST_WINDOW_ARGS,
-        pop1_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop1]),
-        pop2_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop2])
-    resources:
-        slurm_partition="short",
-        runtime=120,
-        mem_mb=4000,
-        cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {FST_OUTDIR}/fst/{wildcards.ref}
-        prefix={FST_OUTDIR}/fst/{wildcards.ref}/{wildcards.pop1}_vs_{wildcards.pop2}
-        
-        # Create temporary population files
-        echo "{params.pop1_samples}" > /tmp/pop1_samples.txt
-        echo "{params.pop2_samples}" > /tmp/pop2_samples.txt
-        
-        vcftools --gzvcf {input.vcf} \
-          --weir-fst-pop /tmp/pop1_samples.txt \
-          --weir-fst-pop /tmp/pop2_samples.txt \
-          {params.window_args} \
-          --out $prefix > /dev/null
-        
-        rm /tmp/pop1_samples.txt /tmp/pop2_samples.txt
-        """
-
-rule pi_per_ref:
-    input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
-    output:
-        PI_OUTDIR / "{ref}.windowed.pi"
-    conda:
-        "envs/pi.yaml"
-    params:
-        window_size=PI_WINDOW_SIZE,
-        window_step=PI_WINDOW_STEP
-    resources:
-        slurm_partition="short",
-        runtime=120,
-        mem_mb=4000,
-        cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {PI_OUTDIR}
-        vcftools --gzvcf {input.vcf} \
-          --window-pi {params.window_size} \
-          --window-pi-step {params.window_step} \
-          --out {PI_OUTDIR}/{wildcards.ref} > /dev/null
-        """
-
-rule allelic_balance_per_sample:
-    input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi"
-    output:
-        summary=AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv",
-        raw=AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv"
-    conda:
-        "envs/allelic_balance.yaml"
-    params:
-        bins=AB_BINS
-    resources:
-        slurm_partition="short",
-        runtime=120,
-        mem_mb=4000,
-        cpus=1
-    run:
-        import statistics
-        from pathlib import Path
-        import pysam
-        
-        bins = params.bins
-        vcf_path = input.vcf
-        out_path = Path(output.summary)
-        raw_path = Path(output.raw)
-        
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        counts = [0 for _ in range(len(bins) - 1)]
-        ratios = []
-        
-        vcf = pysam.VariantFile(vcf_path)
-        samples = list(vcf.header.samples)
-        if len(samples) != 1:
-            raise ValueError(f"Expected 1 sample in {vcf_path}, found {len(samples)}")
-        sample = samples[0]
-        
-        raw_data = []
-        for rec in vcf.fetch():
-            if "AD" not in rec.format or "GT" not in rec.format:
-                continue
-            gt = rec.samples[sample].get("GT")
-            if gt is None or len(gt) < 2:
-                continue
-            if gt[0] == gt[1]:
-                continue
-            ad = rec.samples[sample].get("AD")
-            if ad is None or len(ad) < 2:
-                continue
-            ref_depth = ad[0]
-            alt_depth = ad[1]
-            if ref_depth is None or alt_depth is None:
-                continue
-            total = ref_depth + alt_depth
-            if total == 0:
-                continue
-            ratio = ref_depth / total
-            ratios.append(ratio)
-            site = f"{rec.contig}:{rec.pos}"
-            raw_data.append((site, ref_depth, alt_depth, ratio))
-            for i in range(len(bins) - 1):
-                if bins[i] <= ratio < bins[i + 1]:
-                    counts[i] += 1
-                    break
-        
-        mean_ratio = statistics.mean(ratios) if ratios else 0.0
-        median_ratio = statistics.median(ratios) if ratios else 0.0
-        total_hets = len(ratios)
-        
-        with out_path.open("w") as handle:
-            handle.write("sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio\n")
-            handle.write(f"{sample}\t{wildcards.ref}\t{total_hets}\t{mean_ratio:.6f}\t{median_ratio:.6f}\n")
-            handle.write("bin_low\tbin_high\tcount\n")
-            for i in range(len(counts)):
-                handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
-        
-        with raw_path.open("w") as handle:
-            handle.write("site\tref_depth\talt_depth\tref_ratio\n")
-            for site, ref_depth, alt_depth, ratio in raw_data:
-                handle.write(f"{site}\t{ref_depth}\t{alt_depth}\t{ratio:.6f}\n")
-
-rule allelic_balance_summary:
-    input:
-        expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES)
-    output:
-        summary=AB_OUTDIR / "allelic_balance_summary.tsv"
-    conda:
-        "envs/allelic_balance.yaml"
-    resources:
-        slurm_partition="short",
-        runtime=60,
-        mem_mb=2000,
-        cpus=1
-    run:
-        from pathlib import Path
-        
-        out_path = Path(output.summary)
-        rows = ["sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio"]
-        
-        for path in input:
-            text = Path(path).read_text().splitlines()
-            if len(text) < 2:
-                continue
-            rows.append(text[1])
-        
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text("\n".join(rows) + "\n")
-
-rule roh_per_sample:
-    input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi",
-        lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv"
-    output:
-        roh=ROH_OUTDIR / "{ref}/{sample}.roh.tsv",
-        froh=ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv"
-    conda:
-        "envs/roh.yaml"
-    params:
-        autosomes=ROH_AUTOSOMES,
-        bcftools_args=ROH_BCFTOOLS_ARGS
-    resources:
-        slurm_partition="short",
-        runtime=120,
-        mem_mb=4000,
-        cpus=1
-    run:
-        import subprocess
-        from pathlib import Path
-        import tempfile
-        
-        out_path = Path(output.roh)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Run bcftools roh
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
-            roh_tmp = tmp.name
-        
-        subprocess.run(
-            f"bcftools roh {params.bcftools_args} -o {roh_tmp} {input.vcf}",
-            shell=True, check=True, capture_output=True
-        )
-        
-        roh_path = Path(roh_tmp)
-        lengths_path = Path(input.lengths)
-        out_roh = Path(output.roh)
-        out_froh = Path(output.froh)
-        
-        # Read lengths
-        lengths = {}
-        for line in lengths_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            contig, size = parts[0], parts[1]
-            try:
-                lengths[contig] = int(size)
-            except ValueError:
-                continue
-        
-        # Get autosomes for this ref
-        autosome_map = params.autosomes
-        autosomes = autosome_map.get(wildcards.ref, [])
-        if autosomes:
-            genome_len = sum(lengths.get(c, 0) for c in autosomes)
-        else:
-            genome_len = sum(lengths.values())
-        
-        # Parse ROH results
-        roh_rows = []
-        roh_total = 0
-        for line in roh_path.read_text().splitlines():
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            chrom = parts[2] if len(parts) >= 5 else parts[1]
-            try:
-                start = int(parts[3])
-                end = int(parts[4])
-            except ValueError:
-                continue
-            length = end - start + 1
-            if autosomes and chrom not in autosomes:
-                continue
-            roh_total += length
-            roh_rows.append((chrom, start, end, length))
-        
-        # Write outputs
-        out_roh.write_text("chrom\tstart\tend\tlength\n")
-        with out_roh.open("a") as handle:
-            for chrom, start, end, length in roh_rows:
-                handle.write(f"{chrom}\t{start}\t{end}\t{length}\n")
-        
-        f_roh = (roh_total / genome_len) if genome_len > 0 else 0.0
-        out_froh.write_text("sample\tref\troh_bp\tgenome_bp\tf_roh\n")
-        with out_froh.open("a") as handle:
-            handle.write(f"{wildcards.sample}\t{wildcards.ref}\t{roh_total}\t{genome_len}\t{f_roh:.6f}\n")
-        
-        roh_path.unlink()
-
-rule roh_summary:
-    input:
-        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES)
-    output:
-        summary=ROH_OUTDIR / "f_roh_summary.tsv"
-    conda:
-        "envs/roh.yaml"
-    resources:
-        slurm_partition="short",
-        runtime=60,
-        mem_mb=2000,
-        cpus=1
-    run:
-        from pathlib import Path
-        
-        out_path = Path(output.summary)
-        rows = ["sample\tref\troh_bp\tgenome_bp\tf_roh"]
-        
-        for path in input:
-            text = Path(path).read_text().splitlines()
-            if len(text) < 2:
-                continue
-            rows.append(text[1])
-        
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text("\n".join(rows) + "\n")
-
-rule ref_lengths:
-    input:
-        fasta=lambda wildcards: _gatk_ref_fasta(wildcards),
-        fai=lambda wildcards: _gatk_ref_fai(wildcards)
-    output:
-        lengths=ROH_OUTDIR / "lengths" / "{ref}.lengths.tsv"
-    conda:
-        "envs/roh.yaml"
-    resources:
-        slurm_partition="short",
-        runtime=60,
-        mem_mb=2000,
-        cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {ROH_OUTDIR}/lengths
-        awk -F '\t' 'BEGIN {{OFS="\t"}} {{print $1,$2}}' {input.fai} > {output.lengths}
-        """
+include: "rules/popgen.smk"
