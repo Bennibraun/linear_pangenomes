@@ -66,9 +66,9 @@ SV_FLANK = SV_CFG.get("flank", 200)
 
 CACTUS_CFG = config["cactus"]
 CACTUS_IMAGE = CACTUS_CFG["image"]
-CACTUS_JOBSTORE = CACTUS_CFG.get("jobstore", "results/cactus_work")
 CACTUS_SEQFILE = Path("results") / "cactus_work" / "seqfile.txt"  # Auto-generated, not manual
 CACTUS_OUTDIR = Path(CACTUS_CFG.get("outdir", "results/cactus"))
+CACTUS_JOBSTORE = CACTUS_OUTDIR.parent / "cactus_jobstore"
 CACTUS_OUTNAME = CACTUS_CFG.get("outname", "cactus_graph")
 CACTUS_MAX_CORES = CACTUS_CFG.get("max_cores", 8)
 CACTUS_REF_CONTIGS = CACTUS_CFG.get("ref_contigs", "")
@@ -121,7 +121,18 @@ ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
 ROH_AUTOSOMES = ROH_CFG.get("autosomes", {})
 ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
 
+# Dynamically bind any absolute reference paths into singularity
+_bind_paths = set()
+for ref in REFS_NESTED.values():
+    p = Path(ref["fasta"])
+    if p.is_absolute():
+        _bind_paths.add(str(p.parent))
+
+singularity_args = ("--bind " + ",".join(_bind_paths)) if _bind_paths else ""
+
+
 shell.executable("bash")
+
 
 rule all:
     input:
@@ -230,10 +241,23 @@ rule assemble_and_qc:
           -f
         """
 
+CACTUS_READS_TSV = Path("results") / "sv_calls" / "reads.tsv"
+
+rule generate_reads_tsv:
+    input:
+        reads=[LONG_READS[sample] for sample in LONG_SAMPLES]
+    output:
+        CACTUS_READS_TSV
+    run:
+        with open(output[0], "w") as f:
+            for sample in LONG_SAMPLES:
+                f.write(f"{sample}\t{LONG_READS[sample]}\n")
+
 rule call_svs:
     input:
         reads=[LONG_READS[sample] for sample in LONG_SAMPLES],
-        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in LONG_SAMPLES]
+        assemblies=[f"{SV_ASSEMBLY_DIR}/{sample}/assembly.fasta" for sample in LONG_SAMPLES],
+        reads_tsv=CACTUS_READS_TSV
     output:
         survivor=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         jasmine=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
@@ -250,7 +274,7 @@ rule call_svs:
         mem_mb=32000,
         cpus=SV_THREADS
     params:
-        script="call_svs.sh",
+        script=ancient(Path(workflow.basedir) / "call_svs.sh"),
         reference=ALIGN_CONSPEC,
         assembly_dir=SV_ASSEMBLY_DIR,
         outdir=SV_OUTDIR,
@@ -265,8 +289,9 @@ rule call_svs:
         r"""
         set -euo pipefail
         mkdir -p {SV_OUTDIR}
-        
+
         REFERENCE="{params.reference}" \
+        READS_TSV="$(realpath {input.reads_tsv})" \
         ASSEMBLY_DIR="{params.assembly_dir}" \
         OUTPUT_DIR="{params.outdir}" \
         SAMPLES="{params.samples}" \
@@ -280,26 +305,33 @@ rule call_svs:
         bash {params.script}
         """
 
+CACTUS_STAGED_REF = Path("results") / "cactus_work" / "reference.fasta"
+
+rule stage_cactus_reference:
+    input:
+        ALIGN_CONSPEC
+    output:
+        CACTUS_STAGED_REF
+    shell:
+        "cp {input} {output}"
+
 rule generate_cactus_seqfile:
     input:
-        reference=ALIGN_CONSPEC,
+        reference=CACTUS_STAGED_REF,
         assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
     output:
         seqfile=CACTUS_SEQFILE
     run:
-        # Generate seqfile in cactus format with reference as backbone
-        # First line: reference /path/to/reference.fasta
-        # Following lines: sample_name /path/to/assembly.fasta
         with open(output.seqfile, "w") as f:
-            # Write reference first (backbone)
             f.write(f"reference {input.reference}\n")
-            # Write assemblies
             for sample, assembly in zip(LONG_SAMPLES, input.assemblies):
                 f.write(f"{sample} {assembly}\n")
 
 rule make_cactus_graph:
     input:
-        seqfile=CACTUS_SEQFILE
+        seqfile=CACTUS_SEQFILE,
+        reference=ALIGN_CONSPEC,
+        assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
     output:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",

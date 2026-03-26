@@ -26,7 +26,7 @@
 # - bcftools
 ################################################################################
 
-# Usage: ./2.call_SVs_and_filter.sh
+# Usage: ./call_svs.sh
 
 if [[ -z "${SNAKEMAKE_CONDA_PREFIX:-}" ]]; then
     eval "$(conda shell.bash hook)"
@@ -79,7 +79,7 @@ for SAMPLE in "${SAMPLES[@]}"; do
     echo "Processing sample: ${SAMPLE}"
     
     # Define input files
-    READS="${READS_DIR}/${SAMPLE}.fastq"  # Adjust extension as needed
+    READS=$(awk -v s="${SAMPLE}" '$1 == s {print $2}' "${READS_TSV}")
     
     # Output files
     SAM="${READ_ALIGN_DIR}/${SAMPLE}.sam"
@@ -111,7 +111,8 @@ for SAMPLE in "${SAMPLES[@]}"; do
         --reference ${REFERENCE} \
         --threads ${THREADS} \
         --minsvlen ${MIN_SV_SIZE} \
-        --minsupport ${MIN_READ_SUPPORT}
+        --minsupport ${MIN_READ_SUPPORT} \
+        --allow-overwrite
     
     # Step 1c: Call SVs with cuteSV
     echo "  Calling SVs with cuteSV..."
