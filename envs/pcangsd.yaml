@@ -1,0 +1,11 @@
+name: linear-pangenomes-pcangsd
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pcangsd
+  - plink
+  - bcftools
+  - htslib

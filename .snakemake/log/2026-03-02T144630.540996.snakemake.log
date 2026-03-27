@@ -1,7 +1,0 @@
-Building DAG of jobs...
-MissingInputException in rule assemble_and_qc in file "/Users/bebr1814/projects/bee_paper/linear_pangenomes/Snakefile", line 177:
-Missing input files for rule assemble_and_qc:
-    output: results/assemblies/nanostat/ont_sample1_nanostat.txt, results/assemblies/nanoplot/ont_sample1, results/assemblies/flye/ont_sample1/assembly.fasta, results/assemblies/quast/ont_sample1, results/assemblies/busco/ont_sample1
-    wildcards: sample=ont_sample1
-    affected files:
-        /path/to/long_reads/ont_sample1.fastq

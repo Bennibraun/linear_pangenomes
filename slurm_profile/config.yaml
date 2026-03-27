@@ -7,8 +7,10 @@ default-resources:
   - slurm_partition=short
 
 resources:
-  - threads=100
-  - mem_mb=500000   # 500gb
+  - cpus=100        # total CPUs across all running jobs (highmem ceiling)
+  - mem_mb=500000   # 500 GB
+
+slurm-partition-config: partitions.yaml
 
 jobs: 100
 latency-wait: 60

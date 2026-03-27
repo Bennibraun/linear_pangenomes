@@ -1,0 +1,12 @@
+partitions:
+  short:
+    max_runtime: 660        # 11 hours
+    max_cpus_per_task: 50
+
+  long:
+    max_runtime: 10080      # 7 days
+    max_cpus_per_task: 50
+
+  highmem:
+    max_runtime: 10080      # 7 days
+    max_cpus_per_task: 100

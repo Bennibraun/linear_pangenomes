@@ -18,6 +18,7 @@ SHORT_SAMPLES = manifest_df[manifest_df["seq_type"] == "short"]["sample_id"].tol
 
 # Build lookup tables for fastq paths
 LONG_READS = {row["sample_id"]: row["fastq_r1"] for _, row in manifest_df[manifest_df["seq_type"] == "long"].iterrows()}
+PLATFORM_MAP = {row["sample_id"]: row["platform"].upper() for _, row in manifest_df[manifest_df["seq_type"] == "long"].iterrows()}
 SHORT_READS_R1 = {row["sample_id"]: row["fastq_r1"] for _, row in manifest_df[manifest_df["seq_type"] == "short"].iterrows()}
 SHORT_READS_R2 = {row["sample_id"]: row["fastq_r2"] for _, row in manifest_df[manifest_df["seq_type"] == "short"].iterrows()}
 
@@ -35,6 +36,13 @@ ALIGN_AUGREF = REFS_NESTED["augref"]["fasta"]
 ALIGN_CONSPEC = REFS_NESTED["conspec"]["fasta"]
 ALIGN_HETSPEC = REFS_NESTED["hetspec"]["fasta"]
 
+# mc_graph is the Minigraph-Cactus pangenome surjected into conspec linear
+# coordinates via vg surject. It shares the conspec FASTA and all its indices
+# for downstream variant calling, so all {ref}-wildcarded rules (GATK, merge,
+# FST, AFS, π, allelic balance, ROH) automatically pick it up from here.
+REFS_NESTED["mc_graph"] = dict(REFS_NESTED["conspec"])
+REFERENCE_NAMES = REFERENCE_NAMES + ["mc_graph"]
+
 def get_ref_fasta(name):
     return REFS_NESTED[name]["fasta"]
 
@@ -49,13 +57,12 @@ POP_PAIR_TUPLES = [(p[0], p[1]) for p in POP_PAIRS]
 # ============================================================================
 ASSEMBLY_CFG = config["assembly"]
 ASSEMBLY_OUTDIR = Path(ASSEMBLY_CFG.get("outdir", "results/assemblies"))
-ASSEMBLY_GENOME_SIZE = ASSEMBLY_CFG.get("genome_size", "225m")
 ASSEMBLY_LINEAGE = ASSEMBLY_CFG.get("lineage", "hymenoptera_odb10")
 ASSEMBLY_THREADS = ASSEMBLY_CFG.get("threads", 1)
 
 SV_CFG = config["sv_calling"]
 SV_OUTDIR = Path(SV_CFG.get("outdir", "results/sv_calls"))
-SV_ASSEMBLY_DIR = SV_CFG.get("assembly_dir", str(ASSEMBLY_OUTDIR / "flye"))
+SV_ASSEMBLY_DIR = SV_CFG.get("assembly_dir", str(ASSEMBLY_OUTDIR / "hifiasm"))
 SV_THREADS = SV_CFG.get("threads", 8)
 SV_SURVIVOR = SV_CFG.get("survivor_exec", "SURVIVOR")
 SV_MIN_SIZE = SV_CFG.get("min_sv_size", 50)
@@ -118,8 +125,33 @@ AB_BINS = AB_CFG.get("bins", [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 
 ROH_CFG = config["roh"]
 ROH_OUTDIR = Path(ROH_CFG.get("outdir", "results/roh"))
 ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
-ROH_AUTOSOMES = ROH_CFG.get("autosomes", {})
+ROH_MIN_LENGTH = ROH_CFG.get("min_roh_length", 100000)
 ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
+
+# Derive canonical chromosome names from the conspec .fai so we never need
+# to maintain a manual list. These are the chromosomes present in all three
+# references (augref just appends SV_* contigs on top of conspec).
+_conspec_fai = Path(ALIGN_CONSPEC).with_suffix(".fai")
+if not _conspec_fai.exists():
+    _conspec_fai = Path(f"{ALIGN_CONSPEC}.fai")
+if _conspec_fai.exists():
+    ROH_CANONICAL_CHROMS = [
+        line.split("\t")[0]
+        for line in _conspec_fai.read_text().splitlines()
+        if line.strip()
+    ]
+else:
+    ROH_CANONICAL_CHROMS = []  # fai not yet built; --regions omitted, min_roh_length guards SV contigs
+
+PCANGSD_CFG = config.get("pcangsd", {})
+PCANGSD_OUTDIR = Path(PCANGSD_CFG.get("outdir", "results/pcangsd"))
+PCANGSD_LD_WINDOW = PCANGSD_CFG.get("ld_window", 50)
+PCANGSD_LD_STEP = PCANGSD_CFG.get("ld_step", 10)
+PCANGSD_LD_R2 = PCANGSD_CFG.get("ld_r2", 0.3)
+PCANGSD_MAF = PCANGSD_CFG.get("maf", 0.05)
+PCANGSD_N_PCS = PCANGSD_CFG.get("n_pcs", 10)
+
+PLOT_OUTDIR = Path(config.get("plot", {}).get("outdir", "results/plots"))
 
 # Dynamically bind any absolute reference paths into singularity
 _bind_paths = set()
@@ -139,7 +171,7 @@ rule all:
         # Assembly and QC (long reads only)
         expand(ASSEMBLY_OUTDIR / "nanostat/{sample}_nanostat.txt", sample=LONG_SAMPLES),
         expand(ASSEMBLY_OUTDIR / "nanoplot/{sample}", sample=LONG_SAMPLES),
-        expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES),
+        expand(ASSEMBLY_OUTDIR / "hifiasm/{sample}/assembly.fasta", sample=LONG_SAMPLES),
         expand(ASSEMBLY_OUTDIR / "quast/{sample}", sample=LONG_SAMPLES),
         expand(ASSEMBLY_OUTDIR / "busco/{sample}", sample=LONG_SAMPLES),
         # SV calling
@@ -160,6 +192,8 @@ rule all:
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai", sample=SHORT_SAMPLES),
         # Alignment metrics
         expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=METRICS_REF_TYPES),
         expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
@@ -180,7 +214,21 @@ rule all:
         AB_OUTDIR / "allelic_balance_summary.tsv",
         expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
-        ROH_OUTDIR / "f_roh_summary.tsv"
+        ROH_OUTDIR / "f_roh_summary.tsv",
+        # PCAngsd PCA + selection scan
+        expand(PCANGSD_OUTDIR / "{ref}/pcangsd.cov", ref=REFERENCE_NAMES),
+        expand(PCANGSD_OUTDIR / "{ref}/fst_outliers.tsv", ref=REFERENCE_NAMES),
+        # Plots
+        expand(PLOT_OUTDIR / "pca/{ref}_pca.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "selection/{ref}_selection_scan.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "fst/{ref}_{pop1}_vs_{pop2}_fst.png",
+               ref=REFERENCE_NAMES,
+               pop1=[p[0] for p in POP_PAIR_TUPLES],
+               pop2=[p[1] for p in POP_PAIR_TUPLES]),
+        expand(PLOT_OUTDIR / "afs/{ref}_afs.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "pi/{ref}_pi.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "allelic_balance/{ref}_allelic_balance.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES)
 
 rule nanostat:
     input:
@@ -230,11 +278,11 @@ rule nanoplot:
         """
 
 
-rule flye_assemble:
+rule hifiasm_assemble:
     input:
         fastq=lambda wildcards: LONG_READS[wildcards.sample],
     output:
-        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
+        assembly=ASSEMBLY_OUTDIR / "hifiasm/{sample}/assembly.fasta",
     conda:
         "envs/assembly.yaml"
     threads: ASSEMBLY_THREADS
@@ -244,22 +292,26 @@ rule flye_assemble:
         mem_mb=32000,
         cpus=ASSEMBLY_THREADS,
     params:
-        genome_size=ASSEMBLY_GENOME_SIZE,
-        outdir=lambda wildcards: ASSEMBLY_OUTDIR / f"flye/{wildcards.sample}",
+        prefix=lambda wildcards: ASSEMBLY_OUTDIR / f"hifiasm/{wildcards.sample}/{wildcards.sample}",
+        ont_flag=lambda wildcards: "--ont" if PLATFORM_MAP.get(wildcards.sample, "") == "ONT" else "",
     shell:
         r"""
         set -euo pipefail
-        flye \
-          --nano-hq {input.fastq} \
-          --out-dir {params.outdir} \
-          --genome-size {params.genome_size} \
-          --threads {threads}
+        mkdir -p $(dirname {params.prefix})
+        hifiasm \
+          -o {params.prefix} \
+          -t {threads} \
+          --primary \
+          -f0 \
+          {params.ont_flag} \
+          {input.fastq}
+        awk '/^S/{{print ">"$2; print $3}}' {params.prefix}.p_ctg.gfa > {output.assembly}
         """
 
 
 rule quast_assembly:
     input:
-        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
+        assembly=ASSEMBLY_OUTDIR / "hifiasm/{sample}/assembly.fasta",
     output:
         outdir=directory(ASSEMBLY_OUTDIR / "quast/{sample}"),
     conda:
@@ -282,7 +334,7 @@ rule quast_assembly:
 
 rule busco_assembly:
     input:
-        assembly=ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta",
+        assembly=ASSEMBLY_OUTDIR / "hifiasm/{sample}/assembly.fasta",
     output:
         outdir=directory(ASSEMBLY_OUTDIR / "busco/{sample}"),
     conda:
@@ -324,56 +376,67 @@ rule sv_extract_sequences:
     params:
         flank=SV_FLANK,
         min_ins=SV_MIN_SIZE,
-    run:
-        import pysam
+        samples=" ".join(LONG_SAMPLES),
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        python - << 'PYEOF'
+import pysam
 
-        vcf = pysam.VariantFile(input.vcf)
-        reference = pysam.FastaFile(input.reference)
-        flank_size = params.flank
-        min_ins = params.min_ins
-        samples = LONG_SAMPLES
+vcf_path   = "{input.vcf}"
+ref_path   = "{input.reference}"
+out_fasta  = "{output.fasta}"
+flank_size = {params.flank}
+min_ins    = {params.min_ins}
+samples    = "{params.samples}".split()
 
-        count = 0
-        seen_headers = {}
-        with open(output.fasta, "w") as out:
-            for record in vcf:
-                alt_seq = record.alts[0]
-                ref_allele = record.ref
-                if len(alt_seq) <= len(ref_allele) or alt_seq.startswith("<"):
-                    continue
-                ins_len = len(alt_seq) - len(ref_allele)
-                if ins_len < min_ins:
-                    continue
+vcf       = pysam.VariantFile(vcf_path)
+reference = pysam.FastaFile(ref_path)
 
-                novel_part = alt_seq[len(ref_allele):]
-                chrom = record.chrom
-                pos = record.pos
+count = 0
+seen_headers = {{}}
+with open(out_fasta, "w") as out:
+    for record in vcf:
+        alt_seq    = record.alts[0]
+        ref_allele = record.ref
+        if len(alt_seq) <= len(ref_allele) or alt_seq.startswith("<"):
+            continue
+        ins_len = len(alt_seq) - len(ref_allele)
+        if ins_len < min_ins:
+            continue
+        novel_part = alt_seq[len(ref_allele):]
+        chrom = record.chrom
+        pos   = record.pos
+        try:
+            left_flank  = reference.fetch(chrom, max(0, pos - flank_size), pos)
+            right_flank = reference.fetch(chrom, pos, pos + flank_size)
+        except KeyError:
+            continue
+        supp_vec    = record.info.get("SUPP_VEC", "")
+        sample_name = "unknown"
+        for i, val in enumerate(supp_vec):
+            if val == "1" and i < len(samples):
+                sample_name = samples[i]
+                break
+        full_seq  = left_flank + novel_part + right_flank
+        base_name = "SV_" + chrom + "_" + str(pos) + "_" + sample_name + "_ins" + str(ins_len)
+        if base_name in seen_headers:
+            seen_headers[base_name] += 1
+            header = ">" + base_name + "_dup" + str(seen_headers[base_name])
+        else:
+            seen_headers[base_name] = 0
+            header = ">" + base_name
+        out.write(header + "\n" + full_seq + "\n")
+        count += 1
 
-                try:
-                    left_flank = reference.fetch(chrom, max(0, pos - flank_size), pos)
-                    right_flank = reference.fetch(chrom, pos, pos + flank_size)
-                except KeyError:
-                    continue  # chromosome name doesn't match reference
-
-                supp_vec = record.info.get("SUPP_VEC", "")
-                sample_name = "unknown"
-                for i, val in enumerate(supp_vec):
-                    if val == "1" and i < len(samples):
-                        sample_name = samples[i]
-                        break
-
-                full_seq = left_flank + novel_part + right_flank
-                base_name = f"SV_{chrom}_{pos}_{sample_name}_ins{ins_len}"
-                if base_name in seen_headers:
-                    seen_headers[base_name] += 1
-                    header = f">{base_name}_dup{seen_headers[base_name]}"
-                else:
-                    seen_headers[base_name] = 0
-                    header = f">{base_name}"
-                out.write(f"{header}\n{full_seq}\n")
-                count += 1
-
-        print(f"Extracted {count} flanked sequences to {output.fasta}")
+print("Extracted", count, "flanked sequences to", out_fasta)
+PYEOF
+        """
 
 rule sv_dedup_sequences:
     input:
@@ -413,7 +476,7 @@ rule stage_cactus_reference:
 rule generate_cactus_seqfile:
     input:
         reference=CACTUS_STAGED_REF,
-        assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
+        assemblies=expand(ASSEMBLY_OUTDIR / "hifiasm/{sample}/assembly.fasta", sample=LONG_SAMPLES)
     output:
         seqfile=CACTUS_SEQFILE
     run:
@@ -426,7 +489,7 @@ rule make_cactus_graph:
     input:
         seqfile=CACTUS_SEQFILE,
         reference=ALIGN_CONSPEC,
-        assemblies=expand(ASSEMBLY_OUTDIR / "flye/{sample}/assembly.fasta", sample=LONG_SAMPLES)
+        assemblies=expand(ASSEMBLY_OUTDIR / "hifiasm/{sample}/assembly.fasta", sample=LONG_SAMPLES)
     output:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
@@ -533,6 +596,33 @@ rule align_wgs:
         samtools index {output.hetspec_bam}
 
         vg giraffe -Z {input.cactus} -t {threads} -f {input.fq1} -f {input.fq2} -p --rescue-attempts 0 --sample {wildcards.sample} > {output.cactus_gam}
+        """
+
+rule vg_surject:
+    input:
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
+        gbz=ALIGN_CACTUS_GBZ,
+    output:
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai",
+    conda:
+        "envs/align_wgs.yaml"
+    threads: ALIGN_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=16000,
+        cpus=ALIGN_THREADS,
+    shell:
+        r"""
+        set -euo pipefail
+        vg surject \
+            -x {input.gbz} \
+            -b \
+            -t {threads} \
+            {input.gam} \
+        | samtools sort -@ {threads} -o {output.bam}
+        samtools index {output.bam}
         """
 
 rule align_metrics_per_bam:
@@ -803,3 +893,4 @@ rule merge_gatk_vcfs:
         """
 
 include: "rules/popgen.smk"
+include: "rules/plotting.smk"

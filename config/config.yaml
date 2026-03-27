@@ -33,13 +33,13 @@ population_pairs:
 
 assembly:
   outdir: "results/assemblies"
-  genome_size: "225m"
   lineage: "hymenoptera_odb10"
   threads: 8
+  # platform strings in reads_manifest.tsv must be exactly "ONT" or "PACBIO" (uppercase)
 
 sv_calling:
   outdir: "results/sv_calls"
-  assembly_dir: "results/assemblies/flye"
+  assembly_dir: "results/assemblies/hifiasm"
   threads: 8
   min_sv_size: 50
   min_read_support: 3
@@ -87,11 +87,21 @@ allelic_balance:
   outdir: "results/allelic_balance"
   bins: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
+pcangsd:
+  outdir: "results/pcangsd"
+  ld_window: 50      # plink --indep-pairwise window (variants)
+  ld_step: 10        # plink step size
+  ld_r2: 0.3         # r² threshold
+  maf: 0.05          # minor allele frequency filter applied before pruning
+  n_pcs: 10          # number of PCs to compute
+
+plot:
+  outdir: "results/plots"
+
 roh:
   outdir: "results/roh"
   genome_lengths: {}
-  autosomes:
-    augref: []
-    conspec: []
-    hetspec: []
+  min_roh_length: 100000  # 100 kb standard cutoff (Narasimhan 2016, Kardos et al.)
+                           # Canonical chromosomes are auto-derived from the conspec .fai
+                           # so SV_* contigs are excluded without manual configuration.
   bcftools_args: ""

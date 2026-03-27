@@ -23,10 +23,12 @@ rule sv_align_reads:
         runtime=480,
         mem_mb=16000,
         cpus=SV_THREADS,
+    params:
+        preset=lambda wc: "map-ont" if PLATFORM_MAP.get(wc.sample, "") == "ONT" else "map-hifi",
     shell:
         r"""
         set -euo pipefail
-        minimap2 -ax map-ont -t {threads} --MD {input.reference} {input.reads} \
+        minimap2 -ax {params.preset} -t {threads} --MD {input.reference} {input.reads} \
             | samtools sort -@ {threads} -o {output.bam}
         samtools index -@ {threads} {output.bam}
         """
@@ -146,6 +148,11 @@ rule sv_call_paftools:
         vcf=SV_OUTDIR / "assembly_sv_calls/{sample}.paftools.vcf",
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
     params:
         min_sv_size=SV_MIN_SIZE,
     shell:
@@ -170,6 +177,11 @@ rule sv_merge_read_calls:
         vcf_list=temp(SV_OUTDIR / "merged_per_sample/{sample}_read_vcfs.txt"),
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1,
     params:
         breakpoint_slop=SV_BREAKPOINT_SLOP,
         min_sv_size=SV_MIN_SIZE,
@@ -195,6 +207,11 @@ rule sv_merge_asm_calls:
         vcf_list=temp(SV_OUTDIR / "merged_per_sample/{sample}_asm_vcfs.txt"),
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
     params:
         breakpoint_slop=SV_BREAKPOINT_SLOP,
         min_sv_size=SV_MIN_SIZE,
@@ -221,6 +238,11 @@ rule sv_merge_per_sample:
         vcf_list=temp(SV_OUTDIR / "merged_per_sample/{sample}_all_vcfs.txt"),
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
     params:
         breakpoint_slop=SV_BREAKPOINT_SLOP,
         min_sv_size=SV_MIN_SIZE,
@@ -246,6 +268,11 @@ rule sv_merge_survivor:
         vcf_list=SV_OUTDIR / "pan_sample_catalog/all_samples.txt",
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
     params:
         breakpoint_slop=SV_BREAKPOINT_SLOP,
         min_sv_size=SV_MIN_SIZE,
@@ -271,6 +298,11 @@ rule sv_merge_jasmine:
         vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=240,
+        mem_mb=16000,
+        cpus=1,
     params:
         jasmine_slop=SV_JASMINE_SLOP,
     shell:
@@ -298,6 +330,11 @@ rule sv_catalog_stats:
         support=SV_OUTDIR / "pan_sample_catalog/sv_support_matrix.txt",
     conda:
         "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
     params:
         survivor=SV_SURVIVOR,
     shell:

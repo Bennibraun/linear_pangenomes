@@ -39,7 +39,7 @@ rule afs_per_ref:
 
         freq_prefix = Path(output.afs).parent / "freq_tmp"
         subprocess.run(
-            f"vcftools --gzvcf {input.vcf} --freq2 --out {freq_prefix}",
+            f"vcftools --gzvcf {input.vcf} --freq2 --max-alleles 2 --out {freq_prefix}",
             shell=True, check=True, capture_output=True
         )
 
@@ -52,11 +52,9 @@ rule afs_per_ref:
             if len(parts) < 6:
                 continue
             freqs = []
-            for item in parts[5:]:
-                if ":" not in item:
-                    continue
+            for item in parts[4:]:  # columns 4+ are raw frequencies with --freq2
                 try:
-                    freqs.append(float(item.split(":")[1]))
+                    freqs.append(float(item))
                 except ValueError:
                     continue
             if not freqs:
@@ -102,16 +100,18 @@ rule fst_per_ref_pair:
         mkdir -p {FST_OUTDIR}/fst/{wildcards.ref}
         prefix={FST_OUTDIR}/fst/{wildcards.ref}/{wildcards.pop1}_vs_{wildcards.pop2}
 
-        echo "{params.pop1_samples}" > /tmp/pop1_samples.txt
-        echo "{params.pop2_samples}" > /tmp/pop2_samples.txt
+        pop1_tmp=$(mktemp)
+        pop2_tmp=$(mktemp)
+        trap "rm -f $pop1_tmp $pop2_tmp" EXIT
+
+        printf '%s\n' {params.pop1_samples} > "$pop1_tmp"
+        printf '%s\n' {params.pop2_samples} > "$pop2_tmp"
 
         vcftools --gzvcf {input.vcf} \
-          --weir-fst-pop /tmp/pop1_samples.txt \
-          --weir-fst-pop /tmp/pop2_samples.txt \
+          --weir-fst-pop "$pop1_tmp" \
+          --weir-fst-pop "$pop2_tmp" \
           {params.window_args} \
           --out $prefix > /dev/null
-
-        rm /tmp/pop1_samples.txt /tmp/pop2_samples.txt
         """
 
 
@@ -158,76 +158,78 @@ rule allelic_balance_per_sample:
     conda:
         "../envs/allelic_balance.yaml"
     params:
-        bins=AB_BINS
+        bins=lambda wildcards: " ".join(str(b) for b in AB_BINS),
+        ref=lambda wildcards: wildcards.ref,
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
         cpus=1
-    run:
-        import statistics
-        from pathlib import Path
-        import pysam
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.summary})
+        python - << 'PYEOF'
+import statistics
+import pysam
 
-        bins = params.bins
-        vcf_path = input.vcf
-        out_path = Path(output.summary)
-        raw_path = Path(output.raw)
+vcf_path   = "{input.vcf}"
+out_summary = "{output.summary}"
+out_raw     = "{output.raw}"
+ref_name    = "{params.ref}"
+bins        = [float(x) for x in "{params.bins}".split()]
 
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+vcf     = pysam.VariantFile(vcf_path)
+samples = list(vcf.header.samples)
+if len(samples) != 1:
+    raise ValueError("Expected 1 sample in " + vcf_path + ", found " + str(len(samples)))
+sample = samples[0]
 
-        counts = [0 for _ in range(len(bins) - 1)]
-        ratios = []
+counts   = [0] * (len(bins) - 1)
+ratios   = []
+raw_data = []
 
-        vcf = pysam.VariantFile(vcf_path)
-        samples = list(vcf.header.samples)
-        if len(samples) != 1:
-            raise ValueError(f"Expected 1 sample in {vcf_path}, found {len(samples)}")
-        sample = samples[0]
+for rec in vcf.fetch():
+    if "AD" not in rec.format or "GT" not in rec.format:
+        continue
+    gt = rec.samples[sample].get("GT")
+    if gt is None or len(gt) < 2 or gt[0] == gt[1]:
+        continue
+    ad = rec.samples[sample].get("AD")
+    if ad is None or len(ad) < 2:
+        continue
+    ref_depth, alt_depth = ad[0], ad[1]
+    if ref_depth is None or alt_depth is None:
+        continue
+    total = ref_depth + alt_depth
+    if total == 0:
+        continue
+    ratio = ref_depth / total
+    ratios.append(ratio)
+    raw_data.append((rec.contig + ":" + str(rec.pos), ref_depth, alt_depth, ratio))
+    for i in range(len(bins) - 1):
+        if bins[i] <= ratio < bins[i + 1]:
+            counts[i] += 1
+            break
 
-        raw_data = []
-        for rec in vcf.fetch():
-            if "AD" not in rec.format or "GT" not in rec.format:
-                continue
-            gt = rec.samples[sample].get("GT")
-            if gt is None or len(gt) < 2:
-                continue
-            if gt[0] == gt[1]:
-                continue
-            ad = rec.samples[sample].get("AD")
-            if ad is None or len(ad) < 2:
-                continue
-            ref_depth = ad[0]
-            alt_depth = ad[1]
-            if ref_depth is None or alt_depth is None:
-                continue
-            total = ref_depth + alt_depth
-            if total == 0:
-                continue
-            ratio = ref_depth / total
-            ratios.append(ratio)
-            site = f"{rec.contig}:{rec.pos}"
-            raw_data.append((site, ref_depth, alt_depth, ratio))
-            for i in range(len(bins) - 1):
-                if bins[i] <= ratio < bins[i + 1]:
-                    counts[i] += 1
-                    break
+mean_ratio   = statistics.mean(ratios)   if ratios else 0.0
+median_ratio = statistics.median(ratios) if ratios else 0.0
+total_hets   = len(ratios)
 
-        mean_ratio = statistics.mean(ratios) if ratios else 0.0
-        median_ratio = statistics.median(ratios) if ratios else 0.0
-        total_hets = len(ratios)
+with open(out_summary, "w") as h:
+    h.write("sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio\n")
+    h.write(sample + "\t" + ref_name + "\t" + str(total_hets) + "\t"
+            + format(mean_ratio, ".6f") + "\t" + format(median_ratio, ".6f") + "\n")
+    h.write("bin_low\tbin_high\tcount\n")
+    for i in range(len(counts)):
+        h.write(str(bins[i]) + "\t" + str(bins[i + 1]) + "\t" + str(counts[i]) + "\n")
 
-        with out_path.open("w") as handle:
-            handle.write("sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio\n")
-            handle.write(f"{sample}\t{wildcards.ref}\t{total_hets}\t{mean_ratio:.6f}\t{median_ratio:.6f}\n")
-            handle.write("bin_low\tbin_high\tcount\n")
-            for i in range(len(counts)):
-                handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
-
-        with raw_path.open("w") as handle:
-            handle.write("site\tref_depth\talt_depth\tref_ratio\n")
-            for site, ref_depth, alt_depth, ratio in raw_data:
-                handle.write(f"{site}\t{ref_depth}\t{alt_depth}\t{ratio:.6f}\n")
+with open(out_raw, "w") as h:
+    h.write("site\tref_depth\talt_depth\tref_ratio\n")
+    for site, rd, ad, ratio in raw_data:
+        h.write(site + "\t" + str(rd) + "\t" + str(ad) + "\t" + format(ratio, ".6f") + "\n")
+PYEOF
+        """
 
 
 rule allelic_balance_summary:
@@ -293,7 +295,8 @@ rule roh_per_sample:
     conda:
         "../envs/roh.yaml"
     params:
-        autosomes=ROH_AUTOSOMES,
+        canonical_chroms=ROH_CANONICAL_CHROMS,
+        min_roh_length=ROH_MIN_LENGTH,
         bcftools_args=ROH_BCFTOOLS_ARGS
     resources:
         slurm_partition="short",
@@ -308,11 +311,15 @@ rule roh_per_sample:
         out_path = Path(output.roh)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
+        regions_arg = ""
+        if params.canonical_chroms:
+            regions_arg = "--regions " + ",".join(params.canonical_chroms)
+
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
             roh_tmp = tmp.name
 
         subprocess.run(
-            f"bcftools roh {params.bcftools_args} -o {roh_tmp} {input.vcf}",
+            f"bcftools roh {params.bcftools_args} {regions_arg} -o {roh_tmp} {input.vcf}",
             shell=True, check=True, capture_output=True
         )
 
@@ -334,29 +341,36 @@ rule roh_per_sample:
             except ValueError:
                 continue
 
-        autosome_map = params.autosomes
-        autosomes = autosome_map.get(wildcards.ref, [])
-        if autosomes:
-            genome_len = sum(lengths.get(c, 0) for c in autosomes)
+        canonical = params.canonical_chroms
+        if canonical:
+            genome_len = sum(lengths.get(c, 0) for c in canonical)
         else:
             genome_len = sum(lengths.values())
 
+        # bcftools roh outputs both RG (region) and ST (per-site state) lines.
+        # RG line format: RG sample chrom start end length_bp n_markers quality
+        # Only RG lines represent actual ROH regions.
         roh_rows = []
         roh_total = 0
         for line in roh_path.read_text().splitlines():
             if not line or line.startswith("#"):
                 continue
             parts = line.split()
-            if len(parts) < 5:
+            if parts[0] != "RG":
                 continue
-            chrom = parts[2] if len(parts) >= 5 else parts[1]
+            # RG: [0]RG [1]sample [2]chrom [3]start [4]end [5]length [6]markers [7]quality
+            if len(parts) < 8:
+                continue
+            chrom = parts[2]
             try:
                 start = int(parts[3])
                 end = int(parts[4])
             except ValueError:
                 continue
             length = end - start + 1
-            if autosomes and chrom not in autosomes:
+            if canonical and chrom not in canonical:
+                continue
+            if length < params.min_roh_length:
                 continue
             roh_total += length
             roh_rows.append((chrom, start, end, length))
@@ -400,3 +414,158 @@ rule roh_summary:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("\n".join(rows) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# LD pruning + PCAngsd PCA + selection scan
+# ---------------------------------------------------------------------------
+rule ld_prune_vcf:
+    """LD-prune the merged VCF with plink for use in PCAngsd."""
+    input:
+        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi",
+    output:
+        vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+    conda:
+        "../envs/pcangsd.yaml"
+    params:
+        maf=PCANGSD_MAF,
+        window=PCANGSD_LD_WINDOW,
+        step=PCANGSD_LD_STEP,
+        r2=PCANGSD_LD_R2,
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        outdir=$(dirname {output.vcf})
+        mkdir -p "$outdir"
+
+        # Step 1: compute LD prune list
+        plink \
+            --vcf {input.vcf} \
+            --double-id --allow-extra-chr \
+            --set-missing-var-ids @:#$$1$$2 \
+            --snps-only just-acgt \
+            --maf {params.maf} \
+            --indep-pairwise {params.window} {params.step} {params.r2} \
+            --out "$outdir/prune_tmp"
+
+        # Step 2: extract pruned sites → VCF
+        plink \
+            --vcf {input.vcf} \
+            --double-id --allow-extra-chr \
+            --set-missing-var-ids @:#$$1$$2 \
+            --snps-only just-acgt \
+            --maf {params.maf} \
+            --extract "$outdir/prune_tmp.prune.in" \
+            --recode vcf \
+            --out "$outdir/pruned_tmp"
+
+        bgzip -f "$outdir/pruned_tmp.vcf"
+        mv "$outdir/pruned_tmp.vcf.gz" {output.vcf}
+        tabix -p vcf {output.vcf}
+
+        rm -f "$outdir/prune_tmp".* "$outdir/pruned_tmp.log" "$outdir/pruned_tmp.nosex"
+        """
+
+
+rule pcangsd:
+    """Run PCAngsd on LD-pruned VCF to get covariance matrix and selection scores."""
+    input:
+        vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+    output:
+        cov=PCANGSD_OUTDIR / "{ref}/pcangsd.cov",
+        selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection.npy",
+        samples=PCANGSD_OUTDIR / "{ref}/samples.txt",
+        snp_coords=PCANGSD_OUTDIR / "{ref}/snp_coords.tsv",
+    conda:
+        "../envs/pcangsd.yaml"
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=16000,
+        cpus=4,
+    params:
+        prefix=lambda wildcards: str(PCANGSD_OUTDIR / wildcards.ref / "pcangsd"),
+        n_pcs=PCANGSD_N_PCS,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {params.prefix})
+
+        # Sample order in VCF = row order in covariance matrix
+        bcftools query -l {input.vcf} > {output.samples}
+
+        # SNP coordinates in same order PCAngsd sees them
+        bcftools query -f '%CHROM\t%POS\t%ID\n' {input.vcf} > {output.snp_coords}
+
+        pcangsd \
+            --vcf {input.vcf} \
+            --threads {threads} \
+            --n_eig {params.n_pcs} \
+            --selection \
+            --out {params.prefix}
+        """
+
+
+rule fst_outliers:
+    """
+    Flag per-SNP selection outliers from PCAngsd chi-squared scores with
+    Benjamini-Hochberg FDR correction. Outputs a TSV of all loci with
+    coordinates, chi-squared score, p-value, q-value, and outlier flag.
+    """
+    input:
+        selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection.npy",
+        snp_coords=PCANGSD_OUTDIR / "{ref}/snp_coords.tsv",
+    output:
+        outliers=PCANGSD_OUTDIR / "{ref}/fst_outliers.tsv",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        fdr=0.05,
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.outliers})
+        python - << 'PYEOF'
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+scores = np.load("{input.selection}")
+coords = pd.read_csv("{input.snp_coords}", sep="\t", names=["chrom", "pos", "id"])
+fdr    = {params.fdr}
+
+# PCAngsd selection scores ~ chi-squared(df=1) under the null
+pvals = stats.chi2.sf(scores, df=1)
+
+n        = len(pvals)
+ranks    = np.argsort(pvals)
+sorted_p = pvals[ranks]
+below    = sorted_p <= (np.arange(1, n + 1) / n) * fdr
+cutoff   = sorted_p[below].max() if below.any() else 0.0
+
+qvals_sorted = np.minimum(1.0, sorted_p * n / np.arange(1, n + 1))
+qvals        = np.empty(n)
+qvals[ranks] = qvals_sorted
+
+coords["chi2"]    = scores
+coords["pval"]    = pvals
+coords["qval"]    = qvals
+coords["outlier"] = pvals <= cutoff
+
+coords.sort_values(["chrom", "pos"]).to_csv("{output.outliers}", sep="\t", index=False)
+PYEOF
+        """

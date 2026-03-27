@@ -1,0 +1,11 @@
+name: linear-pangenomes-plotting
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - matplotlib
+  - seaborn
+  - pandas
+  - numpy
+  - scipy
