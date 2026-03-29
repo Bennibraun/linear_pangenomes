@@ -550,6 +550,27 @@ rule bwa_index:
         bwa index {input.fasta}
         """
 
+rule vg_index:
+    input:
+        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
+    output:
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
+    conda:
+        "envs/align_wgs.yaml"
+    threads: 8
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=32000,
+        cpus=8
+    shell:
+        r"""
+        set -euo pipefail
+        vg index -t {threads} --dist-name {output.dist} {input.gbz}
+        vg haplotypes -t {threads} -H {output.hapl} {input.gbz}
+        """
+
 rule align_wgs:
     input:
         fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
@@ -560,7 +581,9 @@ rule align_wgs:
         conspec_bwt=f"{ALIGN_CONSPEC}.bwt",
         hetspec=ALIGN_HETSPEC,
         hetspec_bwt=f"{ALIGN_HETSPEC}.bwt",
-        cactus=ALIGN_CACTUS_GBZ
+        cactus=ALIGN_CACTUS_GBZ,
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
     output:
         augref_bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
         augref_bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai",
@@ -583,19 +606,23 @@ rule align_wgs:
         set -euo pipefail
         mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
 
-        bwa mem -k 17 -O 5,5 -E 2,2 -Y -t {threads} {input.augref} {input.fq1} {input.fq2} | \
+        RG="@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA"
+
+        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.augref} {input.fq1} {input.fq2} | \
           samtools sort -@ {threads} -o {output.augref_bam}
         samtools index {output.augref_bam}
 
-        bwa mem -k 17 -O 5,5 -E 2,2 -Y -t {threads} {input.conspec} {input.fq1} {input.fq2} | \
+        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.conspec} {input.fq1} {input.fq2} | \
           samtools sort -@ {threads} -o {output.conspec_bam}
         samtools index {output.conspec_bam}
 
-        bwa mem -k 17 -O 5,5 -E 2,2 -Y -t {threads} {input.hetspec} {input.fq1} {input.fq2} | \
+        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.hetspec} {input.fq1} {input.fq2} | \
           samtools sort -@ {threads} -o {output.hetspec_bam}
         samtools index {output.hetspec_bam}
 
-        vg giraffe -Z {input.cactus} -t {threads} -f {input.fq1} -f {input.fq2} -p --rescue-attempts 0 --sample {wildcards.sample} > {output.cactus_gam}
+        vg giraffe -Z {input.cactus} --dist-name {input.dist} --haplotype-name {input.hapl} \
+          -t {threads} -f {input.fq1} -f {input.fq2} -p \
+          --rescue-attempts 0 --sample {wildcards.sample} -o {output.cactus_gam}
         """
 
 rule vg_surject:
@@ -618,6 +645,7 @@ rule vg_surject:
         set -euo pipefail
         vg surject \
             -x {input.gbz} \
+            --into-reference \
             -b \
             -t {threads} \
             {input.gam} \
@@ -861,7 +889,7 @@ rule vg_call:
         set -euo pipefail
         mkdir -p {VC_OUTDIR}/vg
         pack_tmp=$(mktemp --suffix=.pack)
-        vg pack -t {threads} -Z {input.gbz} -g {input.gam} -o "$pack_tmp"
+        vg pack -t {threads} -x {input.gbz} -g {input.gam} -o "$pack_tmp"
         vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} {input.gbz} | bgzip -c > {output.vcf}
         tabix -p vcf {output.vcf}
         rm -f "$pack_tmp"

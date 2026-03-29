@@ -22,17 +22,14 @@ rule plot_pca:
         "../envs/plotting.yaml"
     params:
         ref=lambda wildcards: wildcards.ref,
-        sample_pop=lambda wildcards: "\n".join(
-            s + "\t" + SAMPLE_TO_POP.get(s, "unknown")
-            for s in SHORT_SAMPLES
-        ),
+        sample_pop="|".join(s + "," + SAMPLE_TO_POP.get(s, "unknown") for s in SHORT_SAMPLES),
     resources:
         slurm_partition="short",
         runtime=30,
         mem_mb=4000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -49,13 +46,10 @@ out_pdf     = "{output.pdf}"
 out_png     = "{output.png}"
 ref_name    = "{params.ref}"
 
-# sample → population from manifest
-sample_pop_raw = """{params.sample_pop}"""
 sample_to_pop = {{}}
-for line in sample_pop_raw.strip().splitlines():
-    parts = line.split("\t")
-    if len(parts) == 2:
-        sample_to_pop[parts[0]] = parts[1]
+for pair in "{params.sample_pop}".split("|"):
+    k, v = pair.split(",", 1)
+    sample_to_pop[k] = v
 
 cov     = np.loadtxt(cov_file)
 samples = open(sample_file).read().splitlines()
@@ -118,7 +112,7 @@ rule plot_selection_scan:
         mem_mb=4000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -197,7 +191,7 @@ rule plot_fst:
         mem_mb=4000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -274,7 +268,7 @@ rule plot_afs:
         mem_mb=2000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -333,7 +327,7 @@ rule plot_pi:
         mem_mb=4000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -398,15 +392,15 @@ rule plot_allelic_balance:
         "../envs/plotting.yaml"
     params:
         ref=lambda wildcards: wildcards.ref,
-        input_files=lambda wildcards, input: "\n".join(input),
-        samples="\n".join(SHORT_SAMPLES),
+        input_files=lambda wildcards, input: "|".join(str(f) for f in input),
+        samples="|".join(SHORT_SAMPLES),
     resources:
         slurm_partition="short",
         runtime=30,
         mem_mb=4000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -419,8 +413,8 @@ import seaborn as sns
 out_pdf  = "{output.pdf}"
 out_png  = "{output.png}"
 ref_name = "{params.ref}"
-samples  = """{params.samples}""".strip().splitlines()
-paths    = """{params.input_files}""".strip().splitlines()
+samples  = "{params.samples}".split("|")
+paths    = "{params.input_files}".split("|")
 
 n     = len(samples)
 ncols = min(4, n)
@@ -470,17 +464,14 @@ rule plot_roh:
         "../envs/plotting.yaml"
     params:
         ref=lambda wildcards: wildcards.ref,
-        sample_pop=lambda wildcards: "\n".join(
-            s + "\t" + SAMPLE_TO_POP.get(s, "unknown")
-            for s in SHORT_SAMPLES
-        ),
+        sample_pop="|".join(s + "," + SAMPLE_TO_POP.get(s, "unknown") for s in SHORT_SAMPLES),
     resources:
         slurm_partition="short",
         runtime=30,
         mem_mb=2000,
         cpus=1,
     shell:
-        r"""
+        """
         set -euo pipefail
         mkdir -p $(dirname {output.pdf})
         python - << 'PYEOF'
@@ -496,12 +487,10 @@ out_pdf  = "{output.pdf}"
 out_png  = "{output.png}"
 ref_name = "{params.ref}"
 
-sample_pop_raw = """{params.sample_pop}"""
 sample_to_pop = {{}}
-for line in sample_pop_raw.strip().splitlines():
-    parts = line.split("\t")
-    if len(parts) == 2:
-        sample_to_pop[parts[0]] = parts[1]
+for pair in "{params.sample_pop}".split("|"):
+    k, v = pair.split(",", 1)
+    sample_to_pop[k] = v
 
 df = df[df["ref"] == ref_name].copy()
 df["population"] = df["sample"].map(sample_to_pop).fillna("unknown")
