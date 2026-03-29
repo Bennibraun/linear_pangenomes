@@ -294,6 +294,7 @@ rule sv_merge_jasmine:
     input:
         vcfs=expand(SV_OUTDIR / "merged_per_sample/{sample}.high_confidence.vcf", sample=LONG_SAMPLES),
         vcf_list=SV_OUTDIR / "pan_sample_catalog/all_samples.txt",
+        genome=ALIGN_CONSPEC,
     output:
         vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
     conda:
@@ -311,6 +312,7 @@ rule sv_merge_jasmine:
         jasmine \
             file_list={input.vcf_list} \
             out_file={output.vcf} \
+            genome_file={input.genome} \
             max_dist={params.jasmine_slop} \
             out_genotypes=true \
             normalize_type=true
