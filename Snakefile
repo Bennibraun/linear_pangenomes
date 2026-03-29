@@ -165,6 +165,10 @@ singularity_args = ("--bind " + ",".join(_bind_paths)) if _bind_paths else ""
 
 shell.executable("bash")
 
+# Global wildcard constraints: prevent greedy matching of {ref} across underscores
+# in paths like {ref}_{pop1}_vs_{pop2}_fst.png where both can contain underscores.
+wildcard_constraints:
+    ref="|".join(REFERENCE_NAMES)
 
 rule all:
     input:
