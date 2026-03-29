@@ -312,8 +312,8 @@ rule sv_merge_jasmine:
             file_list={input.vcf_list} \
             out_file={output.vcf} \
             max_dist={params.jasmine_slop} \
-            --output_genotypes \
-            --normalize_type
+            out_genotypes=true \
+            normalize_type=true
         """
 
 
