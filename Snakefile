@@ -572,8 +572,9 @@ rule vg_index:
     shell:
         r"""
         set -euo pipefail
-        vg index -t {threads} --dist-name {output.dist} --ri-name {output.ri} {input.gbz}
-        vg haplotypes -t {threads} -r {output.ri} -H {output.hapl} {input.gbz}
+        vg index -t {threads} --dist-name {output.dist} {input.gbz}
+        vg gbwt -t {threads} -r {output.ri} -Z {input.gbz}
+        vg haplotypes -t {threads} -H {output.hapl} {input.gbz}
         """
 
 rule align_wgs:
