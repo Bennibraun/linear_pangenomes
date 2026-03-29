@@ -559,6 +559,7 @@ rule vg_index:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
         dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        ri=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.ri",
         hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
     conda:
         "envs/align_wgs.yaml"
@@ -571,8 +572,8 @@ rule vg_index:
     shell:
         r"""
         set -euo pipefail
-        vg index -t {threads} --dist-name {output.dist} {input.gbz}
-        vg haplotypes -t {threads} -H {output.hapl} {input.gbz}
+        vg index -t {threads} --dist-name {output.dist} --ri-name {output.ri} {input.gbz}
+        vg haplotypes -t {threads} -r {output.ri} -H {output.hapl} {input.gbz}
         """
 
 rule align_wgs:
