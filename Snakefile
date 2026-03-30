@@ -573,7 +573,7 @@ rule vg_index:
         r"""
         set -euo pipefail
         vg index -t {threads} --dist-name {output.dist} {input.gbz}
-        vg gbwt -t {threads} -r {output.ri} -Z {input.gbz}
+        vg gbwt --num-threads {threads} -r {output.ri} -Z {input.gbz}
         vg haplotypes -t {threads} -H {output.hapl} {input.gbz}
         """
 

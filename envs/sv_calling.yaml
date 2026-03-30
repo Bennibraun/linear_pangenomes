@@ -12,5 +12,5 @@ dependencies:
   - sniffles
   - cutesv
   - survivor
-  - jasmine
+  - jasminesv
   - cd-hit

@@ -5,7 +5,8 @@
       "Bash(source /Users/bebr1814/miniconda3/bin/activate /Users/bebr1814/projects/bee_paper/snakemake_out/.snakemake/conda/b22620dcfa2066e7a9f80ed60db057d1_)",
       "Bash(vg haplotypes:*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

@@ -314,8 +314,8 @@ rule sv_merge_jasmine:
             out_file={output.vcf} \
             genome_file={input.genome} \
             max_dist={params.jasmine_slop} \
-            out_genotypes=true \
-            normalize_type=true
+            --output_genotypes \
+            --normalize_type
         """
 
 
