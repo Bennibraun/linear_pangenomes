@@ -354,6 +354,9 @@ rule busco_assembly:
     shell:
         r"""
         set -euo pipefail
+        # BUSCO calls BBTools (stats.sh), which needs an explicit JVM heap on large assemblies.
+        export JAVA_TOOL_OPTIONS="-Xmx28g"
+        export _JAVA_OPTIONS="-Xmx28g"
         busco \
           -i {input.assembly} \
           -m genome \
