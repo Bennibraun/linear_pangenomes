@@ -347,7 +347,7 @@ rule busco_assembly:
     resources:
         slurm_partition="long",
         runtime=480,
-        mem_mb=16000,
+        mem_mb=32000,
         cpus=ASSEMBLY_THREADS,
     params:
         lineage=ASSEMBLY_LINEAGE,
@@ -558,9 +558,7 @@ rule vg_index:
     input:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
-        ri=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.ri",
-        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist"
     conda:
         "envs/align_wgs.yaml"
     threads: 8
@@ -573,8 +571,6 @@ rule vg_index:
         r"""
         set -euo pipefail
         vg index -t {threads} --dist-name {output.dist} {input.gbz}
-        vg gbwt --num-threads {threads} -r {output.ri} -Z {input.gbz}
-        vg haplotypes -t {threads} -H {output.hapl} {input.gbz}
         """
 
 rule align_wgs:
@@ -588,8 +584,7 @@ rule align_wgs:
         hetspec=ALIGN_HETSPEC,
         hetspec_bwt=f"{ALIGN_HETSPEC}.bwt",
         cactus=ALIGN_CACTUS_GBZ,
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
-        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist"
     output:
         augref_bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
         augref_bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai",
@@ -605,7 +600,7 @@ rule align_wgs:
     resources:
         slurm_partition="long",
         runtime=960,
-        mem_mb=16000,
+        mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
         r"""
@@ -626,7 +621,7 @@ rule align_wgs:
           samtools sort -@ {threads} -o {output.hetspec_bam}
         samtools index {output.hetspec_bam}
 
-        vg giraffe -Z {input.cactus} --dist-name {input.dist} --haplotype-name {input.hapl} \
+        vg giraffe -Z {input.cactus} --dist-name {input.dist} \
           -t {threads} -f {input.fq1} -f {input.fq2} -p \
           --rescue-attempts 0 --sample {wildcards.sample} -o {output.cactus_gam}
         """
