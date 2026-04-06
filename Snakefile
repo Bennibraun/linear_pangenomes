@@ -500,7 +500,10 @@ rule make_cactus_graph:
     output:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
-        vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz"
+        vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
     container:
         CACTUS_IMAGE
     threads:
@@ -561,7 +564,7 @@ rule vg_index:
     input:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist"
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist"
     conda:
         "envs/align_wgs.yaml"
     threads: 8
@@ -576,57 +579,138 @@ rule vg_index:
         vg index -t {threads} --dist-name {output.dist} {input.gbz}
         """
 
-rule align_wgs:
+rule vg_minimizer:
+    input:
+        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist"
+    output:
+        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.zipcodes"
+    conda:
+        "envs/align_wgs.yaml"
+    threads: 8
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=32000,
+        cpus=8
+    shell:
+        r"""
+        set -euo pipefail
+        vg minimizer -t {threads} -d {input.dist} -z {output.zipcodes} -o {output.min_idx} {input.gbz}
+        """
+
+rule align_bwa_augref:
     input:
         fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
         fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
-        augref=ALIGN_AUGREF,
-        augref_bwt=f"{ALIGN_AUGREF}.bwt",
-        conspec=ALIGN_CONSPEC,
-        conspec_bwt=f"{ALIGN_CONSPEC}.bwt",
-        hetspec=ALIGN_HETSPEC,
-        hetspec_bwt=f"{ALIGN_HETSPEC}.bwt",
-        cactus=ALIGN_CACTUS_GBZ,
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist"
+        ref=ALIGN_AUGREF,
+        bwt=f"{ALIGN_AUGREF}.bwt"
     output:
-        augref_bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
-        augref_bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai",
-        conspec_bam=ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam",
-        conspec_bai=ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai",
-        hetspec_bam=ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam",
-        hetspec_bai=ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai",
-        cactus_gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai"
     conda:
         "envs/align_wgs.yaml"
     threads:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=960,
+        runtime=480,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
         r"""
         set -euo pipefail
         mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
-
         RG="@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA"
+        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.ref} {input.fq1} {input.fq2} | \
+          samtools sort -@ {threads} -o {output.bam}
+        samtools index {output.bam}
+        """
 
-        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.augref} {input.fq1} {input.fq2} | \
-          samtools sort -@ {threads} -o {output.augref_bam}
-        samtools index {output.augref_bam}
+rule align_bwa_conspec:
+    input:
+        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
+        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        ref=ALIGN_CONSPEC,
+        bwt=f"{ALIGN_CONSPEC}.bwt"
+    output:
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai"
+    conda:
+        "envs/align_wgs.yaml"
+    threads:
+        ALIGN_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=32000,
+        cpus=ALIGN_THREADS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
+        RG="@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA"
+        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.ref} {input.fq1} {input.fq2} | \
+          samtools sort -@ {threads} -o {output.bam}
+        samtools index {output.bam}
+        """
 
-        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.conspec} {input.fq1} {input.fq2} | \
-          samtools sort -@ {threads} -o {output.conspec_bam}
-        samtools index {output.conspec_bam}
+rule align_bwa_hetspec:
+    input:
+        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
+        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        ref=ALIGN_HETSPEC,
+        bwt=f"{ALIGN_HETSPEC}.bwt"
+    output:
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai"
+    conda:
+        "envs/align_wgs.yaml"
+    threads:
+        ALIGN_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=32000,
+        cpus=ALIGN_THREADS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
+        RG="@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA"
+        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.ref} {input.fq1} {input.fq2} | \
+          samtools sort -@ {threads} -o {output.bam}
+        samtools index {output.bam}
+        """
 
-        bwa mem -k 17 -O 5,5 -E 2,2 -Y -R "$RG" -t {threads} {input.hetspec} {input.fq1} {input.fq2} | \
-          samtools sort -@ {threads} -o {output.hetspec_bam}
-        samtools index {output.hetspec_bam}
-
-        vg giraffe -Z {input.cactus} --dist-name {input.dist} \
+rule giraffe_align:
+    input:
+        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
+        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        gbz=ALIGN_CACTUS_GBZ,
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist",
+        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.zipcodes"
+    output:
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
+    conda:
+        "envs/align_wgs.yaml"
+    threads:
+        ALIGN_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=32000,
+        cpus=ALIGN_THREADS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
+        vg giraffe -Z {input.gbz} --dist-name {input.dist} \
+          -m {input.min_idx} \
           -t {threads} -f {input.fq1} -f {input.fq2} -p \
-          --rescue-attempts 0 --sample {wildcards.sample} > {output.cactus_gam}
+          --rescue-attempts 0 --sample {wildcards.sample} -o {output.gam}
         """
 
 rule vg_surject:
