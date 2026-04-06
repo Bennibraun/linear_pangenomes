@@ -500,7 +500,10 @@ rule make_cactus_graph:
     output:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
-        vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz"
+        vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
     container:
         CACTUS_IMAGE
     threads:
@@ -561,7 +564,7 @@ rule vg_index:
     input:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist"
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist"
     conda:
         "envs/align_wgs.yaml"
     threads: 8
@@ -587,7 +590,9 @@ rule align_wgs:
         hetspec=ALIGN_HETSPEC,
         hetspec_bwt=f"{ALIGN_HETSPEC}.bwt",
         cactus=ALIGN_CACTUS_GBZ,
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist"
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist",
+        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
     output:
         augref_bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
         augref_bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai",
@@ -625,6 +630,7 @@ rule align_wgs:
         samtools index {output.hetspec_bam}
 
         vg giraffe -Z {input.cactus} --dist-name {input.dist} \
+          -m {input.min_idx} \
           -t {threads} -f {input.fq1} -f {input.fq2} -p \
           --rescue-attempts 0 --sample {wildcards.sample} -o {output.cactus_gam}
         """
