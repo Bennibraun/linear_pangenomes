@@ -244,7 +244,7 @@ rule nanostat:
     threads: 4
     resources:
         slurm_partition="short",
-        runtime=60,
+        runtime=180,
         mem_mb=4000,
         cpus=4,
     shell:
@@ -268,7 +268,7 @@ rule nanoplot:
     threads: 4
     resources:
         slurm_partition="short",
-        runtime=60,
+        runtime=180,
         mem_mb=4000,
         cpus=4,
     shell:
@@ -626,7 +626,7 @@ rule align_wgs:
 
         vg giraffe -Z {input.cactus} --dist-name {input.dist} \
           -t {threads} -f {input.fq1} -f {input.fq2} -p \
-          --rescue-attempts 0 --sample {wildcards.sample} -o {output.cactus_gam}
+          --rescue-attempts 0 --sample {wildcards.sample} > {output.cactus_gam}
         """
 
 rule vg_surject:
