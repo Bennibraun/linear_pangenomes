@@ -731,7 +731,6 @@ rule vg_surject:
         set -euo pipefail
         vg surject \
             -x {input.gbz} \
-            --into-reference \
             -b \
             -t {threads} \
             {input.gam} \
@@ -769,7 +768,7 @@ rule align_metrics_per_bam:
             awk '{{sum+=$3; n++}} END {{if (n>0) printf "%.6f", sum/n; else print "0"}}')
         map_rate=$(awk -v m="$mapped" -v t="$total" 'BEGIN {{if (t>0) printf "%.6f", m/t; else print "0"}}')
 
-        cat > {output} << 'EOF'
+        cat > {output} << EOF
 sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
 {wildcards.sample}	{wildcards.ref}	$total	$mapped	$map_rate	$mean_mapq	$mean_depth
 EOF
@@ -798,7 +797,7 @@ rule align_metrics_per_gam:
         aligned_reads=$(echo "$stats" | awk '/Total aligned:/ {{print $3}}')
         mean_mapq=$(echo "$stats" | awk -F'mean ' '/Mapping quality:/ {{print $2}}' | awk '{{print $1}}')
 
-        cat > {output} << 'EOF'
+        cat > {output} << EOF
 sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
 {wildcards.sample}	cactus	NA	$aligned_reads	NA	$mean_mapq	NA
 EOF
