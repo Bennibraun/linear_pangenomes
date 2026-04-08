@@ -735,6 +735,12 @@ rule vg_surject:
             -t {threads} \
             {input.gam} \
         | samtools sort -@ {threads} -o {output.bam}
+        samtools view -H {output.bam} \
+            | sed 's/SN:reference#[0-9]*#/SN:/g' \
+            > {output.bam}.header
+        samtools reheader {output.bam}.header {output.bam} > {output.bam}.tmp
+        mv {output.bam}.tmp {output.bam}
+        rm {output.bam}.header
         samtools index {output.bam}
         """
 
