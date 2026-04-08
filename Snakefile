@@ -244,7 +244,7 @@ rule nanostat:
     threads: 4
     resources:
         slurm_partition="short",
-        runtime=60,
+        runtime=180,
         mem_mb=4000,
         cpus=4,
     shell:
@@ -268,7 +268,7 @@ rule nanoplot:
     threads: 4
     resources:
         slurm_partition="short",
-        runtime=60,
+        runtime=180,
         mem_mb=4000,
         cpus=4,
     shell:

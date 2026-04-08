@@ -19,7 +19,7 @@ rule sv_align_reads:
         "../envs/sv_calling.yaml"
     threads: SV_THREADS
     resources:
-        slurm_partition="long",
+        slurm_partition="short",
         runtime=480,
         mem_mb=16000,
         cpus=SV_THREADS,
@@ -48,7 +48,7 @@ rule sv_call_sniffles2:
         "../envs/sv_calling.yaml"
     threads: SV_THREADS
     resources:
-        slurm_partition="long",
+        slurm_partition="short",
         runtime=120,
         mem_mb=8000,
         cpus=SV_THREADS,
@@ -83,7 +83,7 @@ rule sv_call_cutesv:
         "../envs/sv_calling.yaml"
     threads: SV_THREADS
     resources:
-        slurm_partition="long",
+        slurm_partition="short",
         runtime=120,
         mem_mb=8000,
         cpus=SV_THREADS,
@@ -125,7 +125,7 @@ rule sv_align_assembly:
         "../envs/sv_calling.yaml"
     threads: SV_THREADS
     resources:
-        slurm_partition="long",
+        slurm_partition="short",
         runtime=240,
         mem_mb=16000,
         cpus=SV_THREADS,
