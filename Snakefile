@@ -501,9 +501,7 @@ rule make_cactus_graph:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
         vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
-        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
-        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.d2.dist"
     container:
         CACTUS_IMAGE
     threads:
@@ -710,7 +708,7 @@ rule giraffe_align:
         vg giraffe -Z {input.gbz} --dist-name {input.dist} \
           -m {input.min_idx} \
           -t {threads} -f {input.fq1} -f {input.fq2} -p \
-          --rescue-attempts 0 --sample {wildcards.sample} -o {output.gam}
+          --rescue-attempts 0 --sample {wildcards.sample} > {output.gam}
         """
 
 rule vg_surject:
@@ -941,9 +939,9 @@ rule gatk_haplotypecaller:
     threads:
         GATK_THREADS
     resources:
-        slurm_partition="short",
-        runtime=240,
-        mem_mb=8000,
+        slurm_partition="long",
+        runtime=2880,
+        mem_mb=16000,
         cpus=GATK_THREADS
     shell:
         r"""
