@@ -7,7 +7,11 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:snakemake.readthedocs.io)"
+      "WebFetch(domain:snakemake.readthedocs.io)",
+      "Bash(grep -E \"^rule \" /home/ben/Documents/GitHub/linear_pangenomes/Snakefile /home/ben/Documents/GitHub/linear_pangenomes/rules/*.smk)",
+      "Bash(awk -F: '{print $2}')",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)"
     ]
   }
 }
