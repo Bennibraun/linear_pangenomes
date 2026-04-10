@@ -361,3 +361,111 @@ rule sv_catalog_stats:
         grep -oP 'SUPP_VEC=\K[^,;]+' {input.survivor_vcf} \
             | sed 's/./& /g' > {output.support}
         """
+
+
+# ---------------------------------------------------------------------------
+# Per-sample: Novel sequence summary (bp of novel insertions per sample)
+# ---------------------------------------------------------------------------
+rule sv_novel_sequence_summary:
+    input:
+        per_sample_vcfs=expand(SV_OUTDIR / "merged_per_sample/{sample}.high_confidence.vcf", sample=LONG_SAMPLES),
+    output:
+        summary=SV_OUTDIR / "pan_sample_catalog/novel_sequence_summary.tsv",
+    conda:
+        "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
+    params:
+        samples=LONG_SAMPLES,
+        min_sv_size=SV_MIN_SIZE,
+    run:
+        from pathlib import Path
+        import pysam
+
+        rows = ["sample\tn_insertions\tnovel_bp\tn_deletions\tdel_bp\tn_other\ttotal_svs"]
+        for sample, vcf_path in zip(params.samples, input.per_sample_vcfs):
+            vcf = pysam.VariantFile(vcf_path)
+            n_ins = n_del = n_other = 0
+            ins_bp = del_bp = 0
+            for rec in vcf.fetch():
+                svtype = rec.info.get("SVTYPE", "")
+                svlen = abs(rec.info.get("SVLEN", 0))
+                if isinstance(svlen, tuple):
+                    svlen = abs(svlen[0]) if svlen else 0
+                if svtype == "INS":
+                    n_ins += 1
+                    ins_bp += svlen
+                elif svtype == "DEL":
+                    n_del += 1
+                    del_bp += svlen
+                else:
+                    n_other += 1
+            rows.append(f"{sample}\t{n_ins}\t{ins_bp}\t{n_del}\t{del_bp}\t{n_other}\t{n_ins+n_del+n_other}")
+
+        Path(output.summary).parent.mkdir(parents=True, exist_ok=True)
+        Path(output.summary).write_text("\n".join(rows) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Pan-sample: SV counts per sample and shared/unique breakdown
+# ---------------------------------------------------------------------------
+rule sv_sharing_summary:
+    input:
+        survivor_vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
+    output:
+        summary=SV_OUTDIR / "pan_sample_catalog/sv_sharing_summary.tsv",
+    conda:
+        "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
+    params:
+        samples=LONG_SAMPLES,
+    run:
+        from pathlib import Path
+        import pysam
+        from collections import defaultdict
+
+        samples = list(params.samples)
+        n = len(samples)
+
+        # per-sample counts
+        per_sample_total   = defaultdict(int)
+        per_sample_unique  = defaultdict(int)
+        per_sample_shared  = defaultdict(int)
+        svtype_counts      = defaultdict(lambda: defaultdict(int))
+
+        vcf = pysam.VariantFile(input.survivor_vcf)
+        for rec in vcf.fetch():
+            supp_vec = rec.info.get("SUPP_VEC", "")
+            if not supp_vec:
+                continue
+            supporters = [i for i, c in enumerate(supp_vec) if c == "1"]
+            svtype = rec.info.get("SVTYPE", "OTHER")
+            for i in supporters:
+                if i < n:
+                    per_sample_total[samples[i]] += 1
+                    svtype_counts[samples[i]][svtype] += 1
+                    if len(supporters) == 1:
+                        per_sample_unique[samples[i]] += 1
+                    else:
+                        per_sample_shared[samples[i]] += 1
+
+        # collect all svtypes seen
+        all_svtypes = sorted({st for s in svtype_counts for st in svtype_counts[s]})
+        svtype_header = "\t".join(f"n_{st.lower()}" for st in all_svtypes)
+
+        rows = [f"sample\ttotal_svs\tunique_svs\tshared_svs\t{svtype_header}"]
+        for s in samples:
+            svtype_cols = "\t".join(str(svtype_counts[s].get(st, 0)) for st in all_svtypes)
+            rows.append(
+                f"{s}\t{per_sample_total[s]}\t{per_sample_unique[s]}\t{per_sample_shared[s]}\t{svtype_cols}"
+            )
+
+        Path(output.summary).parent.mkdir(parents=True, exist_ok=True)
+        Path(output.summary).write_text("\n".join(rows) + "\n")

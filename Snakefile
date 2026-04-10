@@ -183,6 +183,8 @@ rule all:
         SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.jasmine.vcf",
         SV_OUTDIR / "pan_sample_catalog/catalog_stats.txt",
         SV_OUTDIR / "pan_sample_catalog/sv_support_matrix.txt",
+        SV_OUTDIR / "pan_sample_catalog/novel_sequence_summary.tsv",
+        SV_OUTDIR / "pan_sample_catalog/sv_sharing_summary.tsv",
         SV_OUTDIR / "augref/augmented_reference.fasta",
         # Cactus graph
         CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
@@ -769,7 +771,7 @@ rule align_metrics_per_bam:
 
         total=$(samtools view -c -F 0x900 {input.bam})
         mapped=$(samtools view -c -F 0x904 {input.bam})
-        mean_mapq=$(samtools view -F 4 {input.bam} | awk '{{sum+=$5; n++}} END {{if(n>0) printf "%.6f", sum/n; else print "0"}}')
+        mean_mapq=$(samtools view -F 0x904 {input.bam} | awk '{{sum+=$5; n++}} END {{if(n>0) printf "%.6f", sum/n; else print "0"}}')
         mean_depth=$(samtools depth -a -q {params.min_mapq} -Q {params.min_baseq} {input.bam} | \
             awk '{{sum+=$3; n++}} END {{if (n>0) printf "%.6f", sum/n; else print "0"}}')
         map_rate=$(awk -v m="$mapped" -v t="$total" 'BEGIN {{if (t>0) printf "%.6f", m/t; else print "0"}}')
@@ -800,12 +802,13 @@ rule align_metrics_per_gam:
         mkdir -p {METRICS_OUTDIR}/{wildcards.sample}
 
         stats=$(vg stats -a {input.gam})
+        total_reads=$(echo "$stats" | awk '/Total alignments:/ {{print $3}}')
         aligned_reads=$(echo "$stats" | awk '/Total aligned:/ {{print $3}}')
-        mean_mapq=$(echo "$stats" | awk -F'mean ' '/Mapping quality:/ {{print $2}}' | awk '{{print $1}}')
+        mean_mapq=$(echo "$stats" | awk '/Mapping quality:/ {{print $NF}}')
 
         cat > {output} << EOF
 sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
-{wildcards.sample}	cactus	NA	$aligned_reads	NA	$mean_mapq	NA
+{wildcards.sample}	cactus	$total_reads	$aligned_reads	NA	$mean_mapq	NA
 EOF
         """
 

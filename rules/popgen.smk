@@ -206,7 +206,7 @@ for rec in vcf.fetch():
         continue
     ratio = ref_depth / total
     ratios.append(ratio)
-    raw_data.append((rec.contig + ":" + str(rec.pos), ref_depth, alt_depth, ratio))
+    raw_data.append((str(rec.contig) + ":" + str(rec.pos), ref_depth, alt_depth, ratio))
     for i in range(len(bins) - 1):
         if bins[i] <= ratio < bins[i + 1]:
             counts[i] += 1
