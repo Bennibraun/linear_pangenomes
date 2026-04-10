@@ -613,7 +613,7 @@ rule align_bwa_augref:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
@@ -641,7 +641,7 @@ rule align_bwa_conspec:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
@@ -669,7 +669,7 @@ rule align_bwa_hetspec:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
@@ -698,7 +698,7 @@ rule giraffe_align:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
