@@ -717,6 +717,7 @@ rule vg_surject:
     input:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
         gbz=ALIGN_CACTUS_GBZ,
+        fai=f"{ALIGN_CONSPEC}.fai",
     output:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai",
@@ -737,9 +738,15 @@ rule vg_surject:
             -t {threads} \
             {input.gam} \
         | samtools sort -@ {threads} -o {output.bam}
+        # vg surject with --collapse derives @SQ LN values from graph path lengths,
+        # which can differ from FASTA lengths when cycles are present in the reference
+        # path. Rebuild the header: keep all non-@SQ lines, then regenerate @SQ lines
+        # from the conspec .fai so lengths match the reference GATK will be given.
         samtools view -H {output.bam} \
-            | sed 's/SN:reference#[0-9]*#/SN:/g' \
+            | grep -v '^@SQ' \
             > {output.bam}.header
+        awk '{{print "@SQ\tSN:"$1"\tLN:"$2}}' {input.fai} \
+            >> {output.bam}.header
         samtools reheader {output.bam}.header {output.bam} > {output.bam}.tmp
         mv {output.bam}.tmp {output.bam}
         rm {output.bam}.header
