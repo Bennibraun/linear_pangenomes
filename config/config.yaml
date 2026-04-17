@@ -67,7 +67,7 @@ align_metrics:
 
 variant_calling:
   outdir: "results/variants"
-  gatk:
+  bcftools:
     threads: 4
   vg:
     threads: 4

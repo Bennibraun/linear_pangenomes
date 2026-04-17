@@ -2,7 +2,7 @@
 # Population Genetics Rules
 # ============================================================================
 # Variables (VC_OUTDIR, FST_OUTDIR, PI_OUTDIR, AB_OUTDIR, ROH_OUTDIR, etc.)
-# and helper functions (_gatk_ref_fasta, _gatk_ref_fai) are defined in the
+# and helper functions (_ref_fasta, _ref_fai) are defined in the
 # main Snakefile and are available via Snakemake's include mechanism.
 
 
@@ -17,8 +17,8 @@ def _ref_lengths_path(wildcards):
 # ---------------------------------------------------------------------------
 rule afs_per_ref:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
     output:
         afs=FST_OUTDIR / "afs/{ref}.afs.tsv"
     conda:
@@ -79,8 +79,8 @@ rule afs_per_ref:
 # ---------------------------------------------------------------------------
 rule fst_per_ref_pair:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
     output:
         FST_OUTDIR / "fst/{ref}/{pop1}_vs_{pop2}.weir.fst"
     conda:
@@ -120,8 +120,8 @@ rule fst_per_ref_pair:
 # ---------------------------------------------------------------------------
 rule pi_per_ref:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
     output:
         PI_OUTDIR / "{ref}.windowed.pi"
     conda:
@@ -150,8 +150,8 @@ rule pi_per_ref:
 # ---------------------------------------------------------------------------
 rule allelic_balance_per_sample:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi"
     output:
         summary=AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv",
         raw=AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv"
@@ -265,8 +265,8 @@ rule allelic_balance_summary:
 # ---------------------------------------------------------------------------
 rule ref_lengths:
     input:
-        fasta=lambda wildcards: _gatk_ref_fasta(wildcards),
-        fai=lambda wildcards: _gatk_ref_fai(wildcards)
+        fasta=lambda wildcards: _ref_fasta(wildcards),
+        fai=lambda wildcards: _ref_fai(wildcards)
     output:
         lengths=ROH_OUTDIR / "lengths" / "{ref}.lengths.tsv"
     conda:
@@ -286,8 +286,8 @@ rule ref_lengths:
 
 rule roh_per_sample:
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi",
+        vcf=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi",
         lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv"
     output:
         roh=ROH_OUTDIR / "{ref}/{sample}.roh.tsv",
@@ -341,8 +341,8 @@ rule roh_summary:
 rule ld_prune_vcf:
     """LD-prune the merged VCF with plink for use in PCAngsd."""
     input:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi",
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
     output:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
