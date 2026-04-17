@@ -1,10 +1,9 @@
-name: linear-pangenomes-index
+name: linear-pangenomes-bcftools
 channels:
   - conda-forge
   - bioconda
   - defaults
 dependencies:
-  - samtools
-  - bwa
-  - htslib
   - bcftools
+  - htslib
+  - samtools

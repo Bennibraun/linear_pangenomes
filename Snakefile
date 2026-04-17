@@ -95,10 +95,10 @@ METRICS_MIN_BASEQ = METRICS_CFG.get("min_baseq", 0)
 METRICS_THREADS = METRICS_CFG.get("threads", 2)
 
 VC_CFG = config["variant_calling"]
-GATK_CFG = VC_CFG["gatk"]
+BCFTOOLS_CFG = VC_CFG["bcftools"]
 VG_CFG = VC_CFG["vg"]
 VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
-GATK_THREADS = GATK_CFG.get("threads", 4)
+BCFTOOLS_THREADS = BCFTOOLS_CFG.get("threads", 4)
 VG_GBZ = VG_CFG.get("graph_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 VG_THREADS = VG_CFG.get("threads", 4)
 
@@ -205,12 +205,12 @@ rule all:
         expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
         METRICS_OUTDIR / "alignment_metrics.tsv",
         # Variant calling
-        expand(VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz", ref=REFERENCE_NAMES),
-        expand(VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
+        expand(VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz", ref=REFERENCE_NAMES),
+        expand(VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
         # Population genetics
         expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=REFERENCE_NAMES),
         [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
@@ -852,16 +852,16 @@ rule align_metrics_summary:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("\n".join([header] + rows) + "\n")
 
-def _gatk_ref_fasta(wildcards):
+def _ref_fasta(wildcards):
     if wildcards.ref not in REFS_NESTED:
         raise ValueError(f"Unknown reference: {wildcards.ref}")
     return REFS_NESTED[wildcards.ref]["fasta"]
 
-def _gatk_ref_fai(wildcards):
-    return f"{_gatk_ref_fasta(wildcards)}.fai"
+def _ref_fai(wildcards):
+    return f"{_ref_fasta(wildcards)}.fai"
 
-def _gatk_ref_dict(wildcards):
-    return str(Path(_gatk_ref_fasta(wildcards)).with_suffix(".dict"))
+def _ref_dict(wildcards):
+    return str(Path(_ref_fasta(wildcards)).with_suffix(".dict"))
 
 rule index_augref:
     input:
@@ -885,7 +885,7 @@ rule index_augref:
         r"""
         set -euo pipefail
         samtools faidx {input.fasta}
-        gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
+        samtools dict {input.fasta} -o {output.dict}
         bwa index {input.fasta}
         """
 
@@ -911,7 +911,7 @@ rule index_conspec:
         r"""
         set -euo pipefail
         samtools faidx {input.fasta}
-        gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
+        samtools dict {input.fasta} -o {output.dict}
         bwa index {input.fasta}
         """
 
@@ -937,7 +937,7 @@ rule index_hetspec:
         r"""
         set -euo pipefail
         samtools faidx {input.fasta}
-        gatk CreateSequenceDictionary -R {input.fasta} -O {output.dict}
+        samtools dict {input.fasta} -o {output.dict}
         bwa index {input.fasta}
         """
 
@@ -945,24 +945,24 @@ rule bcftools_call:
     input:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam.bai",
-        fasta=lambda wildcards: _gatk_ref_fasta(wildcards),
-        fai=lambda wildcards: _gatk_ref_fai(wildcards),
+        fasta=lambda wildcards: _ref_fasta(wildcards),
+        fai=lambda wildcards: _ref_fai(wildcards),
     output:
-        vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi"
     conda:
-        "envs/gatk.yaml"
+        "envs/bcftools.yaml"
     threads:
-        GATK_THREADS
+        BCFTOOLS_THREADS
     resources:
         slurm_partition="long",
         runtime=480,
         mem_mb=4000,
-        cpus=GATK_THREADS
+        cpus=BCFTOOLS_THREADS
     shell:
         r"""
         set -euo pipefail
-        mkdir -p {VC_OUTDIR}/gatk/{wildcards.ref}/merged
+        mkdir -p {VC_OUTDIR}/bcftools/{wildcards.ref}/per_sample
         bcftools mpileup \
           -f {input.fasta} \
           -a AD,DP \
@@ -1005,16 +1005,16 @@ rule vg_call:
         rm -f "$pack_tmp"
         """
 
-def _gatk_vcfs_for_ref(wildcards):
-    return [f"{VC_OUTDIR}/gatk/{wildcards.ref}/merged/{sample}.vcf.gz" for sample in SHORT_SAMPLES]
+def _vcfs_for_ref(wildcards):
+    return [f"{VC_OUTDIR}/bcftools/{wildcards.ref}/per_sample/{sample}.vcf.gz" for sample in SHORT_SAMPLES]
 
-rule merge_gatk_vcfs:
+rule merge_vcfs:
     input:
-        vcfs=_gatk_vcfs_for_ref,
-        tbis=lambda wildcards: [f"{VC_OUTDIR}/gatk/{wildcards.ref}/merged/{sample}.vcf.gz.tbi" for sample in SHORT_SAMPLES]
+        vcfs=_vcfs_for_ref,
+        tbis=lambda wildcards: [f"{VC_OUTDIR}/bcftools/{wildcards.ref}/per_sample/{sample}.vcf.gz.tbi" for sample in SHORT_SAMPLES]
     output:
-        vcf=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "gatk/{ref}/combined/merged.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
     conda:
         "envs/fst_afs.yaml"
     resources:
@@ -1025,7 +1025,7 @@ rule merge_gatk_vcfs:
     shell:
         r"""
         set -euo pipefail
-        mkdir -p {VC_OUTDIR}/gatk/{wildcards.ref}/combined
+        mkdir -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined
         bcftools merge -m all -Oz -o {output.vcf} {input.vcfs}
         tabix -p vcf {output.vcf}
         """
