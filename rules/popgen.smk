@@ -24,54 +24,53 @@ rule afs_per_ref:
     conda:
         "../envs/fst_afs.yaml"
     params:
-        bins=AFS_BINS
+        bins=" ".join(str(b) for b in AFS_BINS)
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
         cpus=1
-    run:
-        from pathlib import Path
-        import subprocess
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.afs})
+        freq_prefix=$(dirname {output.afs})/freq_tmp
+        vcftools --gzvcf {input.vcf} --freq2 --max-alleles 2 --out "$freq_prefix"
+        python - << 'PYEOF'
+from pathlib import Path
 
-        out_path = Path(output.afs)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+freq_path = Path("{output.afs}").parent / "freq_tmp.frq"
+bins = [float(x) for x in "{params.bins}".split()]
+counts = [0] * (len(bins) - 1)
 
-        freq_prefix = Path(output.afs).parent / "freq_tmp"
-        subprocess.run(
-            f"vcftools --gzvcf {input.vcf} --freq2 --max-alleles 2 --out {freq_prefix}",
-            shell=True, check=True, capture_output=True
-        )
+for line in freq_path.read_text().strip().splitlines()[1:]:
+    parts = line.split()
+    if len(parts) < 6:
+        continue
+    freqs = []
+    for item in parts[4:]:
+        try:
+            freqs.append(float(item))
+        except ValueError:
+            continue
+    if not freqs:
+        continue
+    maf = min(freqs)
+    for i in range(len(bins) - 1):
+        if bins[i] <= maf < bins[i + 1]:
+            counts[i] += 1
+            break
 
-        freq_path = freq_prefix.with_suffix(".frq")
-        bins = params.bins
-        counts = [0 for _ in range(len(bins) - 1)]
+out = Path("{output.afs}")
+out.write_text("bin_low\tbin_high\tcount\n")
+with out.open("a") as h:
+    for i in range(len(counts)):
+        h.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
 
-        for line in freq_path.read_text().strip().splitlines()[1:]:
-            parts = line.split()
-            if len(parts) < 6:
-                continue
-            freqs = []
-            for item in parts[4:]:  # columns 4+ are raw frequencies with --freq2
-                try:
-                    freqs.append(float(item))
-                except ValueError:
-                    continue
-            if not freqs:
-                continue
-            maf = min(freqs)
-            for i in range(len(bins) - 1):
-                if bins[i] <= maf < bins[i + 1]:
-                    counts[i] += 1
-                    break
-
-        out_path.write_text("bin_low\tbin_high\tcount\n")
-        with out_path.open("a") as handle:
-            for i in range(len(counts)):
-                handle.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
-
-        freq_path.unlink(missing_ok=True)
-        freq_prefix.with_suffix(".log").unlink(missing_ok=True)
+freq_path.unlink(missing_ok=True)
+freq_path.with_suffix(".log").unlink(missing_ok=True)
+PYEOF
+        """
 
 
 # ---------------------------------------------------------------------------
