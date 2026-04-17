@@ -747,6 +747,8 @@ rule vg_surject:
             > {output.bam}.header
         awk '{{print "@SQ\tSN:"$1"\tLN:"$2}}' {input.fai} \
             >> {output.bam}.header
+        echo -e "@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA" \
+            >> {output.bam}.header
         samtools reheader {output.bam}.header {output.bam} > {output.bam}.tmp
         mv {output.bam}.tmp {output.bam}
         rm {output.bam}.header
@@ -945,7 +947,6 @@ rule gatk_haplotypecaller:
         bai=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam.bai",
         fasta=lambda wildcards: _gatk_ref_fasta(wildcards),
         fai=lambda wildcards: _gatk_ref_fai(wildcards),
-        dict=lambda wildcards: _gatk_ref_dict(wildcards)
     output:
         vcf=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "gatk/{ref}/merged/{sample}.vcf.gz.tbi"
@@ -955,18 +956,26 @@ rule gatk_haplotypecaller:
         GATK_THREADS
     resources:
         slurm_partition="long",
-        runtime=2880,
-        mem_mb=16000,
+        runtime=480,
+        mem_mb=4000,
         cpus=GATK_THREADS
     shell:
         r"""
         set -euo pipefail
         mkdir -p {VC_OUTDIR}/gatk/{wildcards.ref}/merged
-        gatk HaplotypeCaller \
-          -R {input.fasta} \
-          -I {input.bam} \
-          -O {output.vcf} \
-          --native-pair-hmm-threads {threads}
+        bcftools mpileup \
+          -f {input.fasta} \
+          -a AD,DP \
+          -q 20 -Q 20 \
+          --threads {threads} \
+          {input.bam} \
+        | bcftools call \
+          -m \
+          -v \
+          -a GQ \
+          --threads {threads} \
+          -Oz -o {output.vcf}
+        tabix -p vcf {output.vcf}
         """
 
 rule vg_call:
