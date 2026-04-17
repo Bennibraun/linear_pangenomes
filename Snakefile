@@ -991,7 +991,7 @@ rule vg_call:
         VG_THREADS
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=16000,
         cpus=VG_THREADS
     shell:

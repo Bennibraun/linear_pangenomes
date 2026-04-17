@@ -12,7 +12,8 @@ resources:
 
 slurm-partition-config: partitions.yaml
 
-jobs: 100
+# jobs: 100
+jobs: 40
 latency-wait: 60
 max-jobs-per-second: 5
 max-status-checks-per-second: 1
