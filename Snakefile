@@ -941,7 +941,7 @@ rule index_hetspec:
         bwa index {input.fasta}
         """
 
-rule gatk_haplotypecaller:
+rule bcftools_call:
     input:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.{ref}.bam.bai",
