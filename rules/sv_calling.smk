@@ -410,7 +410,7 @@ for sample, vcf_path in zip(samples, vcf_paths):
             del_bp += svlen
         else:
             n_other += 1
-    rows.append(f"{sample}\t{n_ins}\t{ins_bp}\t{n_del}\t{del_bp}\t{n_other}\t{n_ins+n_del+n_other}")
+    rows.append(sample + "\t" + str(n_ins) + "\t" + str(ins_bp) + "\t" + str(n_del) + "\t" + str(del_bp) + "\t" + str(n_other) + "\t" + str(n_ins+n_del+n_other))
 
 Path("{output.summary}").write_text("\n".join(rows) + "\n")
 PYEOF
@@ -468,12 +468,12 @@ for rec in vcf.fetch():
                 per_sample_shared[samples[i]] += 1
 
 all_svtypes = sorted({st for s in svtype_counts for st in svtype_counts[s]})
-svtype_header = "\t".join(f"n_{st.lower()}" for st in all_svtypes)
+svtype_header = "\t".join("n_" + st.lower() for st in all_svtypes)
 
-rows = [f"sample\ttotal_svs\tunique_svs\tshared_svs\t{svtype_header}"]
+rows = ["sample\ttotal_svs\tunique_svs\tshared_svs\t" + svtype_header]
 for s in samples:
     svtype_cols = "\t".join(str(svtype_counts[s].get(st, 0)) for st in all_svtypes)
-    rows.append(f"{s}\t{per_sample_total[s]}\t{per_sample_unique[s]}\t{per_sample_shared[s]}\t{svtype_cols}")
+    rows.append(s + "\t" + str(per_sample_total[s]) + "\t" + str(per_sample_unique[s]) + "\t" + str(per_sample_shared[s]) + "\t" + svtype_cols)
 
 Path("{output.summary}").write_text("\n".join(rows) + "\n")
 PYEOF
