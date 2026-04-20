@@ -706,6 +706,8 @@ rule giraffe_align:
     shell:
         r"""
         set -euo pipefail
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
         mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
         vg giraffe -Z {input.gbz} --dist-name {input.dist} \
           -m {input.min_idx} \
@@ -997,6 +999,8 @@ rule vg_call:
     shell:
         r"""
         set -euo pipefail
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
         mkdir -p {VC_OUTDIR}/vg
         pack_tmp=$(mktemp --suffix=.pack)
         vg pack -t {threads} -x {input.gbz} -g {input.gam} -o "$pack_tmp"

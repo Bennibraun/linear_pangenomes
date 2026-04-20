@@ -86,8 +86,8 @@ rule fst_per_ref_pair:
         "../envs/fst_afs.yaml"
     params:
         window_args=FST_WINDOW_ARGS,
-        pop1_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop1]),
-        pop2_samples=lambda wildcards: "\n".join(POP_SAMPLES[wildcards.pop2])
+        pop1_samples=lambda wildcards: " ".join(POP_SAMPLES[wildcards.pop1]),
+        pop2_samples=lambda wildcards: " ".join(POP_SAMPLES[wildcards.pop2])
     resources:
         slurm_partition="short",
         runtime=120,
@@ -103,8 +103,8 @@ rule fst_per_ref_pair:
         pop2_tmp=$(mktemp)
         trap "rm -f $pop1_tmp $pop2_tmp" EXIT
 
-        printf '%s\n' {params.pop1_samples} > "$pop1_tmp"
-        printf '%s\n' {params.pop2_samples} > "$pop2_tmp"
+        for s in {params.pop1_samples}; do echo "$s"; done > "$pop1_tmp"
+        for s in {params.pop2_samples}; do echo "$s"; done > "$pop2_tmp"
 
         vcftools --gzvcf {input.vcf} \
           --weir-fst-pop "$pop1_tmp" \
@@ -367,9 +367,11 @@ rule ld_prune_vcf:
         plink \
             --vcf {input.vcf} \
             --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#$$1$$2 \
+            --set-missing-var-ids @:#_$$1_$$2 \
+            --rm-dup exclude-mismatch \
             --snps-only just-acgt \
             --maf {params.maf} \
+            --memory {resources.mem_mb} \
             --indep-pairwise {params.window} {params.step} {params.r2} \
             --out "$outdir/prune_tmp"
 
@@ -377,9 +379,11 @@ rule ld_prune_vcf:
         plink \
             --vcf {input.vcf} \
             --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#$$1$$2 \
+            --set-missing-var-ids @:#_$$1_$$2 \
+            --rm-dup exclude-mismatch \
             --snps-only just-acgt \
             --maf {params.maf} \
+            --memory {resources.mem_mb} \
             --extract "$outdir/prune_tmp.prune.in" \
             --recode vcf \
             --out "$outdir/pruned_tmp"
