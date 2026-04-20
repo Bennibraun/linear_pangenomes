@@ -65,7 +65,7 @@ out = Path("{output.afs}")
 out.write_text("bin_low\tbin_high\tcount\n")
 with out.open("a") as h:
     for i in range(len(counts)):
-        h.write(f"{bins[i]}\t{bins[i+1]}\t{counts[i]}\n")
+        h.write(str(bins[i]) + "\t" + str(bins[i+1]) + "\t" + str(counts[i]) + "\n")
 
 freq_path.unlink(missing_ok=True)
 freq_path.with_suffix(".log").unlink(missing_ok=True)
