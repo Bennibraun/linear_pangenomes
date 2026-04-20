@@ -956,7 +956,7 @@ rule bcftools_call:
         BCFTOOLS_THREADS
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=4000,
         cpus=BCFTOOLS_THREADS
     shell:
@@ -991,7 +991,7 @@ rule vg_call:
         VG_THREADS
     resources:
         slurm_partition="long",
-        runtime=960,
+        runtime=2880,
         mem_mb=16000,
         cpus=VG_THREADS
     shell:

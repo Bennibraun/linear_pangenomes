@@ -323,7 +323,7 @@ rule plot_pi:
         ref=lambda wildcards: wildcards.ref,
     resources:
         slurm_partition="short",
-        runtime=30,
+        runtime=300,
         mem_mb=4000,
         cpus=1,
     shell:
