@@ -379,42 +379,10 @@ rule sv_novel_sequence_summary:
         mem_mb=4000,
         cpus=1,
     params:
-        samples=" ".join(LONG_SAMPLES),
+        samples=LONG_SAMPLES,
         min_sv_size=SV_MIN_SIZE,
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.summary})
-        python - << 'PYEOF'
-import pysam
-from pathlib import Path
-
-samples = "{params.samples}".split()
-vcf_paths = "{input.per_sample_vcfs}".split()
-
-rows = ["sample\tn_insertions\tnovel_bp\tn_deletions\tdel_bp\tn_other\ttotal_svs"]
-for sample, vcf_path in zip(samples, vcf_paths):
-    vcf = pysam.VariantFile(vcf_path)
-    n_ins = n_del = n_other = 0
-    ins_bp = del_bp = 0
-    for rec in vcf.fetch():
-        svtype = rec.info.get("SVTYPE", "")
-        svlen = abs(rec.info.get("SVLEN", 0))
-        if isinstance(svlen, tuple):
-            svlen = abs(svlen[0]) if svlen else 0
-        if svtype == "INS":
-            n_ins += 1
-            ins_bp += svlen
-        elif svtype == "DEL":
-            n_del += 1
-            del_bp += svlen
-        else:
-            n_other += 1
-    rows.append(sample + "\t" + str(n_ins) + "\t" + str(ins_bp) + "\t" + str(n_del) + "\t" + str(del_bp) + "\t" + str(n_other) + "\t" + str(n_ins+n_del+n_other))
-
-Path("{output.summary}").write_text("\n".join(rows) + "\n")
-PYEOF
-        """
+    script:
+        "../scripts/sv_novel_sequence_summary.py"
 
 
 # ---------------------------------------------------------------------------
@@ -433,48 +401,6 @@ rule sv_sharing_summary:
         mem_mb=4000,
         cpus=1,
     params:
-        samples=" ".join(LONG_SAMPLES),
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.summary})
-        python - << 'PYEOF'
-import pysam
-from pathlib import Path
-from collections import defaultdict
-
-samples = "{params.samples}".split()
-n = len(samples)
-
-per_sample_total  = defaultdict(int)
-per_sample_unique = defaultdict(int)
-per_sample_shared = defaultdict(int)
-svtype_counts     = defaultdict(lambda: defaultdict(int))
-
-vcf = pysam.VariantFile("{input.survivor_vcf}")
-for rec in vcf.fetch():
-    supp_vec = rec.info.get("SUPP_VEC", "")
-    if not supp_vec:
-        continue
-    supporters = [i for i, c in enumerate(supp_vec) if c == "1"]
-    svtype = rec.info.get("SVTYPE", "OTHER")
-    for i in supporters:
-        if i < n:
-            per_sample_total[samples[i]] += 1
-            svtype_counts[samples[i]][svtype] += 1
-            if len(supporters) == 1:
-                per_sample_unique[samples[i]] += 1
-            else:
-                per_sample_shared[samples[i]] += 1
-
-all_svtypes = sorted({st for s in svtype_counts for st in svtype_counts[s]})
-svtype_header = "\t".join("n_" + st.lower() for st in all_svtypes)
-
-rows = ["sample\ttotal_svs\tunique_svs\tshared_svs\t" + svtype_header]
-for s in samples:
-    svtype_cols = "\t".join(str(svtype_counts[s].get(st, 0)) for st in all_svtypes)
-    rows.append(s + "\t" + str(per_sample_total[s]) + "\t" + str(per_sample_unique[s]) + "\t" + str(per_sample_shared[s]) + "\t" + svtype_cols)
-
-Path("{output.summary}").write_text("\n".join(rows) + "\n")
-PYEOF
-        """
+        samples=LONG_SAMPLES,
+    script:
+        "../scripts/sv_sharing_summary.py"

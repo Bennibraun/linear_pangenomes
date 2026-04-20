@@ -391,61 +391,8 @@ rule sv_extract_sequences:
         runtime=120,
         mem_mb=8000,
         cpus=1,
-    shell:
-        r"""
-        set -euo pipefail
-        python - << 'PYEOF'
-import pysam
-
-vcf_path   = "{input.vcf}"
-ref_path   = "{input.reference}"
-out_fasta  = "{output.fasta}"
-flank_size = {params.flank}
-min_ins    = {params.min_ins}
-samples    = "{params.samples}".split()
-
-vcf       = pysam.VariantFile(vcf_path)
-reference = pysam.FastaFile(ref_path)
-
-count = 0
-seen_headers = {{}}
-with open(out_fasta, "w") as out:
-    for record in vcf:
-        alt_seq    = record.alts[0]
-        ref_allele = record.ref
-        if len(alt_seq) <= len(ref_allele) or alt_seq.startswith("<"):
-            continue
-        ins_len = len(alt_seq) - len(ref_allele)
-        if ins_len < min_ins:
-            continue
-        novel_part = alt_seq[len(ref_allele):]
-        chrom = record.chrom
-        pos   = record.pos
-        try:
-            left_flank  = reference.fetch(chrom, max(0, pos - flank_size), pos)
-            right_flank = reference.fetch(chrom, pos, pos + flank_size)
-        except KeyError:
-            continue
-        supp_vec    = record.info.get("SUPP_VEC", "")
-        sample_name = "unknown"
-        for i, val in enumerate(supp_vec):
-            if val == "1" and i < len(samples):
-                sample_name = samples[i]
-                break
-        full_seq  = left_flank + novel_part + right_flank
-        base_name = "SV_" + chrom + "_" + str(pos) + "_" + sample_name + "_ins" + str(ins_len)
-        if base_name in seen_headers:
-            seen_headers[base_name] += 1
-            header = ">" + base_name + "_dup" + str(seen_headers[base_name])
-        else:
-            seen_headers[base_name] = 0
-            header = ">" + base_name
-        out.write(header + "\n" + full_seq + "\n")
-        count += 1
-
-print("Extracted", count, "flanked sequences to", out_fasta)
-PYEOF
-        """
+    script:
+        "scripts/sv_extract_sequences.py"
 
 rule sv_dedup_sequences:
     input:
@@ -740,10 +687,10 @@ rule vg_surject:
             -t {threads} \
             {input.gam} \
         | samtools sort -@ {threads} -o {output.bam}
-        # vg surject with --collapse derives @SQ LN values from graph path lengths,
-        # which can differ from FASTA lengths when cycles are present in the reference
-        # path. Rebuild the header: keep all non-@SQ lines, then regenerate @SQ lines
-        # from the conspec .fai so lengths match the reference GATK will be given.
+        # vg surject derives @SQ LN values from graph path lengths, which can differ
+        # from FASTA lengths when cycles are present in the reference path. Rebuild
+        # the header: keep all non-@SQ lines, regenerate @SQ lines from the conspec
+        # .fai, and inject an @RG line so bcftools can identify the sample.
         samtools view -H {output.bam} \
             | grep -v '^@SQ' \
             > {output.bam}.header

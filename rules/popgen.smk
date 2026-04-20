@@ -24,53 +24,14 @@ rule afs_per_ref:
     conda:
         "../envs/fst_afs.yaml"
     params:
-        bins=" ".join(str(b) for b in AFS_BINS)
+        bins=AFS_BINS
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
         cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.afs})
-        freq_prefix=$(dirname {output.afs})/freq_tmp
-        vcftools --gzvcf {input.vcf} --freq2 --max-alleles 2 --out "$freq_prefix"
-        python - << 'PYEOF'
-from pathlib import Path
-
-freq_path = Path("{output.afs}").parent / "freq_tmp.frq"
-bins = [float(x) for x in "{params.bins}".split()]
-counts = [0] * (len(bins) - 1)
-
-for line in freq_path.read_text().strip().splitlines()[1:]:
-    parts = line.split()
-    if len(parts) < 6:
-        continue
-    freqs = []
-    for item in parts[4:]:
-        try:
-            freqs.append(float(item))
-        except ValueError:
-            continue
-    if not freqs:
-        continue
-    maf = min(freqs)
-    for i in range(len(bins) - 1):
-        if bins[i] <= maf < bins[i + 1]:
-            counts[i] += 1
-            break
-
-out = Path("{output.afs}")
-out.write_text("bin_low\tbin_high\tcount\n")
-with out.open("a") as h:
-    for i in range(len(counts)):
-        h.write(str(bins[i]) + "\t" + str(bins[i+1]) + "\t" + str(counts[i]) + "\n")
-
-freq_path.unlink(missing_ok=True)
-freq_path.with_suffix(".log").unlink(missing_ok=True)
-PYEOF
-        """
+    script:
+        "../scripts/afs_per_ref.py"
 
 
 # ---------------------------------------------------------------------------
@@ -157,78 +118,15 @@ rule allelic_balance_per_sample:
     conda:
         "../envs/allelic_balance.yaml"
     params:
-        bins=lambda wildcards: " ".join(str(b) for b in AB_BINS),
+        bins=AB_BINS,
         ref=lambda wildcards: wildcards.ref,
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
         cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.summary})
-        python - << 'PYEOF'
-import statistics
-import pysam
-
-vcf_path   = "{input.vcf}"
-out_summary = "{output.summary}"
-out_raw     = "{output.raw}"
-ref_name    = "{params.ref}"
-bins        = [float(x) for x in "{params.bins}".split()]
-
-vcf     = pysam.VariantFile(vcf_path)
-samples = list(vcf.header.samples)
-if len(samples) != 1:
-    raise ValueError("Expected 1 sample in " + vcf_path + ", found " + str(len(samples)))
-sample = samples[0]
-
-counts   = [0] * (len(bins) - 1)
-ratios   = []
-raw_data = []
-
-for rec in vcf.fetch():
-    if "AD" not in rec.format or "GT" not in rec.format:
-        continue
-    gt = rec.samples[sample].get("GT")
-    if gt is None or len(gt) < 2 or gt[0] == gt[1]:
-        continue
-    ad = rec.samples[sample].get("AD")
-    if ad is None or len(ad) < 2:
-        continue
-    ref_depth, alt_depth = ad[0], ad[1]
-    if ref_depth is None or alt_depth is None:
-        continue
-    total = ref_depth + alt_depth
-    if total == 0:
-        continue
-    ratio = ref_depth / total
-    ratios.append(ratio)
-    raw_data.append((str(rec.contig) + ":" + str(rec.pos), ref_depth, alt_depth, ratio))
-    for i in range(len(bins) - 1):
-        if bins[i] <= ratio < bins[i + 1]:
-            counts[i] += 1
-            break
-
-mean_ratio   = statistics.mean(ratios)   if ratios else 0.0
-median_ratio = statistics.median(ratios) if ratios else 0.0
-total_hets   = len(ratios)
-
-with open(out_summary, "w") as h:
-    h.write("sample\tref\ttotal_hets\tmean_ref_ratio\tmedian_ref_ratio\n")
-    h.write(sample + "\t" + ref_name + "\t" + str(total_hets) + "\t"
-            + format(mean_ratio, ".6f") + "\t" + format(median_ratio, ".6f") + "\n")
-    h.write("bin_low\tbin_high\tcount\n")
-    for i in range(len(counts)):
-        h.write(str(bins[i]) + "\t" + str(bins[i + 1]) + "\t" + str(counts[i]) + "\n")
-
-with open(out_raw, "w") as h:
-    h.write("site\tref_depth\talt_depth\tref_ratio\n")
-    for site, rd, ad, ratio in raw_data:
-        h.write(site + "\t" + str(rd) + "\t" + str(ad) + "\t" + format(ratio, ".6f") + "\n")
-PYEOF
-        """
+    script:
+        "../scripts/allelic_balance_per_sample.py"
 
 
 rule allelic_balance_summary:
@@ -457,37 +355,5 @@ rule fst_outliers:
         runtime=60,
         mem_mb=4000,
         cpus=1,
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.outliers})
-        python - << 'PYEOF'
-import numpy as np
-import pandas as pd
-from scipy import stats
-
-scores = np.load("{input.selection}")
-coords = pd.read_csv("{input.snp_coords}", sep="\t", names=["chrom", "pos", "id"])
-fdr    = {params.fdr}
-
-# PCAngsd selection scores ~ chi-squared(df=1) under the null
-pvals = stats.chi2.sf(scores, df=1)
-
-n        = len(pvals)
-ranks    = np.argsort(pvals)
-sorted_p = pvals[ranks]
-below    = sorted_p <= (np.arange(1, n + 1) / n) * fdr
-cutoff   = sorted_p[below].max() if below.any() else 0.0
-
-qvals_sorted = np.minimum(1.0, sorted_p * n / np.arange(1, n + 1))
-qvals        = np.empty(n)
-qvals[ranks] = qvals_sorted
-
-coords["chi2"]    = scores
-coords["pval"]    = pvals
-coords["qval"]    = qvals
-coords["outlier"] = pvals <= cutoff
-
-coords.sort_values(["chrom", "pos"]).to_csv("{output.outliers}", sep="\t", index=False)
-PYEOF
-        """
+    script:
+        "../scripts/fst_outliers.py"
