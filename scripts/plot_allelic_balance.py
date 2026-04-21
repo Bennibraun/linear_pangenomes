@@ -18,10 +18,10 @@ fig.suptitle("Allelic balance \u2014 " + ref_name, fontsize=11, fontweight="bold
 
 for idx, (sample, path) in enumerate(zip(samples, paths)):
     ax   = axes[idx // ncols][idx % ncols]
-    full = pd.read_csv(path, sep="\t")
-    bins = full[full["bin_low"].apply(
-        lambda x: str(x).replace(".", "", 1).lstrip("-").isdigit()
-    )].copy()
+    # File has two sections: summary rows first, then bin rows starting after "bin_low" header
+    lines = open(path).read().splitlines()
+    bin_start = next(i for i, l in enumerate(lines) if l.startswith("bin_low"))
+    bins = pd.read_csv(path, sep="\t", skiprows=bin_start, nrows=len(lines) - bin_start - 1)
     bins["bin_low"] = bins["bin_low"].astype(float)
     bins["count"]   = bins["count"].astype(int)
     labels = [format(r["bin_low"], ".1f") for _, r in bins.iterrows()]

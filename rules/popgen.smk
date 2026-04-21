@@ -261,12 +261,16 @@ rule ld_prune_vcf:
         outdir=$(dirname {output.vcf})
         mkdir -p "$outdir"
 
+        # Pre-filter: assign unique IDs and remove duplicate positions with bcftools
+        dedup_vcf="$outdir/dedup_tmp.vcf.gz"
+        bcftools norm --rm-dup all -Oz -o "$dedup_vcf" {input.vcf}
+        bcftools index -t "$dedup_vcf"
+
         # Step 1: compute LD prune list
         plink \
-            --vcf {input.vcf} \
+            --vcf "$dedup_vcf" \
             --double-id --allow-extra-chr \
             --set-missing-var-ids @:#_$$1_$$2 \
-            --rm-dup exclude-mismatch \
             --snps-only just-acgt \
             --maf {params.maf} \
             --memory {resources.mem_mb} \
@@ -275,10 +279,9 @@ rule ld_prune_vcf:
 
         # Step 2: extract pruned sites → VCF
         plink \
-            --vcf {input.vcf} \
+            --vcf "$dedup_vcf" \
             --double-id --allow-extra-chr \
             --set-missing-var-ids @:#_$$1_$$2 \
-            --rm-dup exclude-mismatch \
             --snps-only just-acgt \
             --maf {params.maf} \
             --memory {resources.mem_mb} \
@@ -290,6 +293,7 @@ rule ld_prune_vcf:
         mv "$outdir/pruned_tmp.vcf.gz" {output.vcf}
         tabix -p vcf {output.vcf}
 
+        rm -f "$dedup_vcf" "$dedup_vcf.tbi"
         rm -f "$outdir/prune_tmp".* "$outdir/pruned_tmp.log" "$outdir/pruned_tmp.nosex"
         """
 

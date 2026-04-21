@@ -11,7 +11,9 @@
       "Bash(grep -E \"^rule \" /home/ben/Documents/GitHub/linear_pangenomes/Snakefile /home/ben/Documents/GitHub/linear_pangenomes/rules/*.smk)",
       "Bash(awk -F: '{print $2}')",
       "Bash(git add:*)",
-      "Bash(git commit -m ':*)"
+      "Bash(git commit -m ':*)",
+      "Bash(cat)",
+      "Read(//tmp/**)"
     ]
   }
 }
