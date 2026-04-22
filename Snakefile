@@ -762,7 +762,7 @@ rule align_metrics_per_gam:
         stats=$(vg stats -a {input.gam})
         total_reads=$(echo "$stats" | awk '/Total alignments:/ {{print $3}}')
         aligned_reads=$(echo "$stats" | awk '/Total aligned:/ {{print $3}}')
-        mean_mapq=$(echo "$stats" | awk '/Mapping quality:/ {{print $NF}}')
+        mean_mapq=$(echo "$stats" | awk '/Mapping quality:/ {{print $5}}' | tr -d ',')
 
         cat > {output} << EOF
 sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
