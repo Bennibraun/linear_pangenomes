@@ -681,26 +681,66 @@ rule vg_surject:
     shell:
         r"""
         set -euo pipefail
+
+        # Build a path-list of the conspec reference contigs so vg surject
+        # only emits alignments onto those paths.
+        cut -f1 {input.fai} > {output.bam}.paths
+
         vg surject \
             -x {input.gbz} \
             -b \
+            -F {output.bam}.paths \
             -t {threads} \
             {input.gam} \
-        | samtools sort -@ {threads} -o {output.bam}
+        | samtools sort -@ {threads} -o {output.bam}.unfiltered
+
         # vg surject derives @SQ LN values from graph path lengths, which can differ
         # from FASTA lengths when cycles are present in the reference path. Rebuild
         # the header: keep all non-@SQ lines, regenerate @SQ lines from the conspec
         # .fai, and inject an @RG line so bcftools can identify the sample.
-        samtools view -H {output.bam} \
+        samtools view -H {output.bam}.unfiltered \
             | grep -v '^@SQ' \
             > {output.bam}.header
         awk '{{print "@SQ\tSN:"$1"\tLN:"$2}}' {input.fai} \
             >> {output.bam}.header
         echo -e "@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA" \
             >> {output.bam}.header
-        samtools reheader {output.bam}.header {output.bam} > {output.bam}.tmp
-        mv {output.bam}.tmp {output.bam}
-        rm {output.bam}.header
+        samtools reheader {output.bam}.header {output.bam}.unfiltered > {output.bam}.reheadered
+
+        # Drop reads whose alignment end exceeds the conspec contig length.
+        # These are reads aligned through cyclic graph paths whose linearized
+        # coordinates fall outside the FASTA contig bounds; keeping them
+        # causes bcftools mpileup to emit one stderr line per read and slow
+        # variant calling to a crawl.
+        samtools view -h {output.bam}.reheadered \
+            | awk -v OFS='\t' '
+                /^@SQ/ {{
+                    sn=""; ln=0;
+                    for (i=1; i<=NF; i++) {{
+                        if ($i ~ /^SN:/) sn=substr($i,4);
+                        if ($i ~ /^LN:/) ln=substr($i,4)+0;
+                    }}
+                    if (sn != "") len[sn]=ln;
+                    print; next;
+                }}
+                /^@/ {{ print; next }}
+                {{
+                    if ($3 == "*") {{ print; next }}
+                    cigar=$6; span=0; n="";
+                    for (i=1; i<=length(cigar); i++) {{
+                        c=substr(cigar,i,1);
+                        if (c ~ /[0-9]/) {{ n=n c }}
+                        else {{
+                            if (c=="M"||c=="D"||c=="N"||c=="="||c=="X") span += n+0;
+                            n="";
+                        }}
+                    }}
+                    end = $4 + span - 1;
+                    if (($3 in len) && end <= len[$3]) print;
+                }}' \
+            | samtools view -b -o {output.bam} -
+
+        rm {output.bam}.unfiltered {output.bam}.reheadered {output.bam}.header {output.bam}.paths
         samtools index {output.bam}
         """
 
@@ -917,14 +957,15 @@ rule bcftools_call:
           -a AD,DP \
           -q 20 -Q 20 \
           --threads {threads} \
-          {input.bam} \
+          {input.bam} 2> {output.vcf}.mpileup.log \
         | bcftools call \
           -m \
           -v \
           -a GQ \
           --threads {threads} \
-          -Oz -o {output.vcf}
-        tabix -p vcf {output.vcf}
+          -Oz \
+          --write-index=tbi \
+          -o {output.vcf}
         """
 
 rule vg_call:
