@@ -684,7 +684,11 @@ rule vg_surject:
 
         # Build a path-list of the conspec reference contigs so vg surject
         # only emits alignments onto those paths.
-        cut -f1 {input.fai} > {output.bam}.paths
+        # The GBZ uses PanSN-style names (e.g. reference#0#NC_037638.1) rather
+        # than the bare contig names in the .fai, so query the graph directly.
+        vg paths -x {input.gbz} -L \
+            | grep -Ff <(cut -f1 {input.fai}) \
+            > {output.bam}.paths
 
         vg surject \
             -x {input.gbz} \
