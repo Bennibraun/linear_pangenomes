@@ -85,6 +85,7 @@ ALIGN_CFG = config["align_wgs"]
 ALIGN_OUTDIR = Path(ALIGN_CFG.get("outdir", "results/wgs_alignments"))
 ALIGN_CACTUS_GBZ = ALIGN_CFG.get("cactus_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 ALIGN_THREADS = ALIGN_CFG.get("threads", 4)
+ALIGN_DOWNSAMPLE_BASES = ALIGN_CFG.get("downsample_bases", "10G")
 
 METRICS_CFG = config["align_metrics"]
 METRICS_OUTDIR = Path(METRICS_CFG.get("outdir", "results/align_metrics"))
@@ -547,10 +548,39 @@ rule vg_minimizer:
         vg minimizer -t {threads} -d {input.dist} -z {output.zipcodes} -o {output.min_idx} {input.gbz}
         """
 
+rule downsample_short_reads:
+    """Subsample paired-end FASTQs to ALIGN_DOWNSAMPLE_BASES (default 10 G)
+    of uncompressed sequence so that oversized libraries don't bottleneck
+    alignment and variant calling.  rasusa passes all reads through unchanged
+    when the input is already smaller than the target."""
+    input:
+        r1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
+        r2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+    output:
+        r1=temp(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
+        r2=temp(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
+    conda:
+        "envs/align_wgs.yaml"
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=4,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
+        rasusa reads \
+            -i {input.r1} {input.r2} \
+            -b {ALIGN_DOWNSAMPLE_BASES} \
+            -o {output.r1} {output.r2}
+        """
+
 rule align_bwa_augref:
     input:
-        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
-        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
+        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
         ref=ALIGN_AUGREF,
         bwt=f"{ALIGN_AUGREF}.bwt"
     output:
@@ -577,8 +607,8 @@ rule align_bwa_augref:
 
 rule align_bwa_conspec:
     input:
-        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
-        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
+        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
         ref=ALIGN_CONSPEC,
         bwt=f"{ALIGN_CONSPEC}.bwt"
     output:
@@ -605,8 +635,8 @@ rule align_bwa_conspec:
 
 rule align_bwa_hetspec:
     input:
-        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
-        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
+        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
         ref=ALIGN_HETSPEC,
         bwt=f"{ALIGN_HETSPEC}.bwt"
     output:
@@ -633,8 +663,8 @@ rule align_bwa_hetspec:
 
 rule giraffe_align:
     input:
-        fq1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
-        fq2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
+        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
+        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
         gbz=ALIGN_CACTUS_GBZ,
         dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist",
         min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",

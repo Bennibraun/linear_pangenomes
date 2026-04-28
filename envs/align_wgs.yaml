@@ -5,5 +5,6 @@ channels:
   - defaults
 dependencies:
   - bwa
+  - rasusa>=2
   - samtools
   - vg
