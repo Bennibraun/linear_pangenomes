@@ -572,9 +572,9 @@ rule downsample_short_reads:
         set -euo pipefail
         mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
         rasusa reads \
-            -i {input.r1} {input.r2} \
             -b {ALIGN_DOWNSAMPLE_BASES} \
-            -o {output.r1} {output.r2}
+            -o {output.r1} -o {output.r2} \
+            {input.r1} {input.r2}
         """
 
 rule align_bwa_augref:
