@@ -162,3 +162,37 @@ rule plot_roh:
         cpus=1,
     script:
         "../scripts/plot_roh.py"
+
+
+rule plot_alignment_rates:
+    input:
+        metrics=METRICS_OUTDIR / "alignment_metrics.tsv",
+    output:
+        pdf=PLOT_OUTDIR / "alignment/alignment_rates.pdf",
+        png=PLOT_OUTDIR / "alignment/alignment_rates.png",
+    conda:
+        "../envs/plotting.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_alignment_rates.py"
+
+
+rule plot_assembly_alignment:
+    input:
+        metrics=METRICS_OUTDIR / "short_to_assembly_metrics.tsv",
+    output:
+        pdf=PLOT_OUTDIR / "alignment/assembly_alignment.pdf",
+        png=PLOT_OUTDIR / "alignment/assembly_alignment.png",
+    conda:
+        "../envs/plotting.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_assembly_alignment.py"

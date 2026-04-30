@@ -242,7 +242,9 @@ rule all:
         expand(PLOT_OUTDIR / "pi/{ref}_pi.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "tajimas_d/{ref}_tajimas_d.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "allelic_balance/{ref}_allelic_balance.png", ref=REFERENCE_NAMES),
-        expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES)
+        expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES),
+        PLOT_OUTDIR / "alignment/alignment_rates.png",
+        PLOT_OUTDIR / "alignment/assembly_alignment.png"
 
 rule nanostat:
     input:
