@@ -11,19 +11,39 @@ out_png  = snakemake.output.png
 ref_name = snakemake.params.ref
 fdr      = snakemake.params.fdr
 
+# Drop augref SV alt contigs and tiny scaffolds (see plot_pi.py / plot_fst.py).
+df = df[~df["chrom"].astype(str).str.startswith("SV_")]
+chrom_span_all = df.groupby("chrom")["pos"].agg(lambda s: s.max() - s.min())
+keep_chroms    = chrom_span_all[chrom_span_all >= 1_000_000].index.tolist()
+df             = df[df["chrom"].isin(keep_chroms)]
+
+if df.empty:
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.text(0.5, 0.5, f"No qualifying chromosomes for selection scan — {ref_name}",
+            ha="center", va="center", transform=ax.transAxes)
+    ax.axis("off")
+    fig.savefig(out_pdf, bbox_inches="tight")
+    fig.savefig(out_png, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    raise SystemExit(0)
+
 chroms        = sorted(df["chrom"].unique())
 chrom_palette = sns.color_palette("tab20", len(chroms))
 chrom_color   = {c: chrom_palette[i % len(chrom_palette)] for i, c in enumerate(chroms)}
 
+chrom_min  = df.groupby("chrom")["pos"].min()
+chrom_max  = df.groupby("chrom")["pos"].max()
+chrom_span = (chrom_max - chrom_min).reindex(chroms)
+
 offsets, centers = {}, {}
 offset = 0
 for chrom in chroms:
-    sub = df[df["chrom"] == chrom]
+    span = chrom_span[chrom]
     offsets[chrom] = offset
-    centers[chrom] = offset + (sub["pos"].max() - sub["pos"].min()) / 2
-    offset += sub["pos"].max() - sub["pos"].min() + 1_000_000
+    centers[chrom] = offset + span / 2
+    offset += span + 1_000_000
 
-df["x"] = df.apply(lambda r: offsets[r["chrom"]] + r["pos"], axis=1)
+df["x"] = df["chrom"].map(offsets).astype(float) + df["pos"].astype(float)
 
 fig, ax = plt.subplots(figsize=(16, 4))
 for chrom in chroms:
@@ -42,7 +62,7 @@ ax.set_xticks([centers[c] for c in chroms])
 ax.set_xticklabels(chroms, rotation=45, ha="right", fontsize=6)
 ax.set_xlabel("Chromosome")
 ax.set_ylabel("Chi-squared score")
-ax.set_title("Selection scan \u2014 " + ref_name, fontweight="bold")
+ax.set_title("Selection scan — " + ref_name, fontweight="bold")
 sns.despine(ax=ax)
 
 fig.savefig(out_pdf, bbox_inches="tight")

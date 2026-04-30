@@ -5,6 +5,7 @@ channels:
   - defaults
 dependencies:
   - bwa
+  - minimap2
   - rasusa>=2
   - samtools
   - vg

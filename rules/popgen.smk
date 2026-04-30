@@ -106,6 +106,35 @@ rule pi_per_ref:
 
 
 # ---------------------------------------------------------------------------
+# Tajima's D in non-overlapping windows (vcftools)
+# ---------------------------------------------------------------------------
+rule tajimas_d_per_ref:
+    input:
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
+    output:
+        PI_OUTDIR / "{ref}.Tajima.D"
+    conda:
+        "../envs/pi.yaml"
+    params:
+        # vcftools --TajimaD only takes a single non-overlapping window size.
+        window_size=PI_WINDOW_SIZE
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {PI_OUTDIR}
+        vcftools --gzvcf {input.vcf} \
+          --TajimaD {params.window_size} \
+          --out {PI_OUTDIR}/{wildcards.ref} > /dev/null
+        """
+
+
+# ---------------------------------------------------------------------------
 # Allelic balance (ref bias) per sample
 # ---------------------------------------------------------------------------
 rule allelic_balance_per_sample:
@@ -183,8 +212,12 @@ rule ref_lengths:
 
 rule roh_per_sample:
     input:
-        vcf=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi",
+        # Use the merged (cohort-wide) VCF so bcftools roh estimates allele
+        # frequencies across all samples; with -s {sample} it then reports
+        # ROH for the requested sample only. Calling on a single-sample VCF
+        # cannot estimate AF and yields unreliable ROH boundaries.
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
         lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv"
     output:
         roh=ROH_OUTDIR / "{ref}/{sample}.roh.tsv",
@@ -192,7 +225,6 @@ rule roh_per_sample:
     conda:
         "../envs/roh.yaml"
     params:
-        canonical_chroms=ROH_CANONICAL_CHROMS,
         min_roh_length=ROH_MIN_LENGTH,
         bcftools_args=ROH_BCFTOOLS_ARGS
     resources:

@@ -2,32 +2,19 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-vcf = snakemake.input.vcf
-lengths_file = snakemake.input.lengths
-out_roh = Path(snakemake.output.roh)
-out_froh = Path(snakemake.output.froh)
+vcf            = snakemake.input.vcf
+lengths_file   = snakemake.input.lengths
+out_roh        = Path(snakemake.output.roh)
+out_froh       = Path(snakemake.output.froh)
 
-canonical = snakemake.params.canonical_chroms
 min_roh_length = snakemake.params.min_roh_length
-bcftools_args = snakemake.params.bcftools_args
-sample = snakemake.wildcards.sample
-ref = snakemake.wildcards.ref
+bcftools_args  = snakemake.params.bcftools_args
+sample         = snakemake.wildcards.sample
+ref            = snakemake.wildcards.ref
 
 out_roh.parent.mkdir(parents=True, exist_ok=True)
 
-regions_arg = ""
-if canonical:
-    regions_arg = "--regions " + ",".join(canonical)
-
-with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".roh") as tmp:
-    roh_tmp = tmp.name
-
-subprocess.run(
-    f"bcftools roh {bcftools_args} {regions_arg} -o {roh_tmp} {vcf}",
-    shell=True, check=True,
-)
-
-# Parse chromosome lengths
+# Parse chromosome lengths from this ref's .fai-derived lengths file.
 lengths = {}
 for line in Path(lengths_file).read_text().splitlines():
     parts = line.split()
@@ -38,15 +25,41 @@ for line in Path(lengths_file).read_text().splitlines():
     except ValueError:
         continue
 
+# Canonical chromosomes for this ref = all contigs except augref-style SV
+# alt contigs (which are short flanked-insertion sequences and shouldn't be
+# treated as part of the diploid genome for F_ROH normalization). This is
+# derived per-ref from its own .fai, so each reference uses its own contigs
+# (the previous global list hard-coded conspec contigs, yielding empty ROH
+# regions when applied to hetspec VCFs).
+canonical = [c for c in lengths.keys() if not str(c).startswith("SV_")]
+
+regions_arg = ""
+if canonical:
+    regions_arg = "--regions " + ",".join(canonical)
+
+with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".roh") as tmp:
+    roh_tmp = tmp.name
+
+# bcftools roh estimates allele frequency from the supplied VCF's samples.
+# We take the merged (cohort-wide) VCF and subset to {sample} via -s so the
+# AF estimates use the full population. Calling roh on a single-sample VCF
+# with no AF info would fall back to --AF-dflt 0.4 (or fail), giving
+# unreliable ROH boundaries.
+subprocess.run(
+    f"bcftools roh {bcftools_args} -s {sample} {regions_arg} -o {roh_tmp} {vcf}",
+    shell=True, check=True,
+)
+
 if canonical:
     genome_len = sum(lengths.get(c, 0) for c in canonical)
 else:
     genome_len = sum(lengths.values())
 
-# Parse bcftools roh output — only RG (region) lines
+# Parse bcftools roh output — only RG (region) lines.
 # RG format: RG sample chrom start end length_bp n_markers quality
 roh_rows = []
 roh_total = 0
+canonical_set = set(canonical)
 for line in Path(roh_tmp).read_text().splitlines():
     if not line or line.startswith("#"):
         continue
@@ -60,7 +73,7 @@ for line in Path(roh_tmp).read_text().splitlines():
     except ValueError:
         continue
     length = end - start + 1
-    if canonical and chrom not in canonical:
+    if canonical_set and chrom not in canonical_set:
         continue
     if length < min_roh_length:
         continue

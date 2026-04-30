@@ -102,6 +102,25 @@ rule plot_pi:
         "../scripts/plot_pi.py"
 
 
+rule plot_tajimas_d:
+    input:
+        tajima=PI_OUTDIR / "{ref}.Tajima.D",
+    output:
+        pdf=PLOT_OUTDIR / "tajimas_d/{ref}_tajimas_d.pdf",
+        png=PLOT_OUTDIR / "tajimas_d/{ref}_tajimas_d.png",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        ref=lambda wildcards: wildcards.ref,
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_tajimas_d.py"
+
+
 rule plot_allelic_balance:
     input:
         expand(

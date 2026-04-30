@@ -30,8 +30,12 @@ for line in freq_path.read_text().strip().splitlines()[1:]:
     if not freqs:
         continue
     maf = min(freqs)
+    last = len(bins) - 2
     for i in range(len(bins) - 1):
-        if bins[i] <= maf < bins[i + 1]:
+        # Include the right edge on the final bin so MAF == bins[-1] (e.g.
+        # 0.5 with default bins) doesn't fall through unaccounted for.
+        in_bin = bins[i] <= maf <= bins[i + 1] if i == last else bins[i] <= maf < bins[i + 1]
+        if in_bin:
             counts[i] += 1
             break
 
