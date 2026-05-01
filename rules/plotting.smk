@@ -57,7 +57,7 @@ rule plot_fst:
         pop2=lambda wildcards: wildcards.pop2,
     resources:
         slurm_partition="short",
-        runtime=30,
+        runtime=60,
         mem_mb=4000,
         cpus=1,
     script:

@@ -295,7 +295,7 @@ rule ld_prune_vcf:
 
         # Pre-filter: assign unique IDs and remove duplicate positions with bcftools
         dedup_vcf="$outdir/dedup_tmp.vcf.gz"
-        bcftools norm --rm-dup all -Oz -o "$dedup_vcf" {input.vcf}
+        bcftools norm --rm-dup any -Oz -o "$dedup_vcf" {input.vcf}
         bcftools index -t "$dedup_vcf"
 
         # Step 1: compute LD prune list
