@@ -859,7 +859,7 @@ rule count_short_reads:
         r1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
         r2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"
     output:
-        count=ALIGN_OUTDIR / "{sample}/{sample}.read_count.txt"
+        txt=ALIGN_OUTDIR / "{sample}/{sample}.read_count.txt"
     conda:
         "envs/align_metrics.yaml"
     resources:
@@ -874,7 +874,7 @@ rule count_short_reads:
         set -euo pipefail
         n1=$(zcat {input.r1} | awk 'NR%4==1' | wc -l)
         n2=$(zcat {input.r2} | awk 'NR%4==1' | wc -l)
-        echo $((n1 + n2)) > {output.count}
+        echo $((n1 + n2)) > {output.txt}
         """
 
 

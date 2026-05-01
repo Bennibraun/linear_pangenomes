@@ -13,6 +13,9 @@ ref_name = snakemake.params.ref
 # Drop augref-style SV alt contigs and any short scaffolds, otherwise the
 # augref plot is dominated by thousands of ~1 kb contigs each forced to
 # occupy a 1 Mb gap on the x-axis.
+df["PI"] = pd.to_numeric(df["PI"], errors="coerce")
+df = df.dropna(subset=["PI"])
+
 df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
 chrom_span_all = df.groupby("CHROM")["BIN_START"].agg(lambda s: s.max() - s.min())
 keep_chroms    = chrom_span_all[chrom_span_all >= 1_000_000].index.tolist()
