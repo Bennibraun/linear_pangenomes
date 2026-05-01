@@ -850,14 +850,14 @@ rule vg_surject:
         """
 
 rule count_short_reads:
-    """Count reads in the downsampled fastq pair so that all alignment-rate
-    denominators (bwa, vg-surject, minimap2) use the same canonical read
-    count rather than per-tool BAM/GAM totals (which differ — vg-surject in
-    particular drops reads with end > contig length, biasing its rate
-    upward; bwa retains unmapped reads, so its BAM total = read count)."""
+    """Derive the canonical per-sample read count from the conspec BAM.
+    bwa-mem writes every input read to the BAM (mapped or not), so
+    `samtools view -c` on the conspec BAM equals the downsampled-fastq
+    read count exactly — without touching the temp fastq files, which
+    would trigger a full mtime cascade if they needed to be recreated."""
     input:
-        r1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
-        r2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai",
     output:
         txt=ALIGN_OUTDIR / "{sample}/{sample}.read_count.txt"
     conda:
@@ -872,9 +872,7 @@ rule count_short_reads:
     shell:
         r"""
         set -euo pipefail
-        n1=$(zcat {input.r1} | awk 'NR%4==1' | wc -l)
-        n2=$(zcat {input.r2} | awk 'NR%4==1' | wc -l)
-        echo $((n1 + n2)) > {output.txt}
+        samtools view -c {input.bam} > {output.txt}
         """
 
 
