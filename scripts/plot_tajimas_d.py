@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -30,11 +31,11 @@ if df.empty:
     raise SystemExit(0)
 
 chroms      = sorted(df["CHROM"].unique())
-palette     = sns.color_palette("tab20", len(chroms))
-chrom_color = {c: palette[i % len(palette)] for i, c in enumerate(chroms)}
+palette_arr = np.array(sns.color_palette("tab20", len(chroms)))
 
-chrom_min  = df.groupby("CHROM")["BIN_START"].min()
-chrom_max  = df.groupby("CHROM")["BIN_START"].max()
+chrom_grp  = df.groupby("CHROM")["BIN_START"]
+chrom_min  = chrom_grp.min()
+chrom_max  = chrom_grp.max()
 chrom_span = (chrom_max - chrom_min).reindex(chroms)
 
 offsets, centers = {}, {}
@@ -47,11 +48,19 @@ for chrom in chroms:
 
 df["x"] = df["CHROM"].map(offsets).astype(float) + df["BIN_START"].astype(float)
 
+# For Tajima's D both tails matter; thin by largest absolute deviation per bin.
+x_range  = df["x"].max() - df["x"].min()
+bin_size = max(1.0, x_range / 4800.0)
+df["_bin"]    = (df["x"] / bin_size).astype(np.int64)
+df["_abs_td"] = df["TajimaD"].abs()
+df = df.loc[df.groupby(["CHROM", "_bin"])["_abs_td"].idxmax()].drop(columns=["_bin", "_abs_td"])
+
+chrom_to_idx = {c: i for i, c in enumerate(chroms)}
+colors = palette_arr[df["CHROM"].map(chrom_to_idx).values % len(palette_arr)]
+
 fig, ax = plt.subplots(figsize=(16, 4))
-for chrom in chroms:
-    sub = df[df["CHROM"] == chrom]
-    ax.scatter(sub["x"], sub["TajimaD"],
-               c=[chrom_color[chrom]] * len(sub), s=4, alpha=0.5, linewidths=0)
+ax.scatter(df["x"].values, df["TajimaD"].values,
+           c=colors, s=4, alpha=0.5, linewidths=0, rasterized=True)
 
 ax.axhline(0, color="grey", lw=0.5, linestyle="--")
 ax.set_xticks([centers[c] for c in chroms])

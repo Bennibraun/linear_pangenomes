@@ -27,12 +27,12 @@ if df.empty:
     plt.close(fig)
     raise SystemExit(0)
 
-chroms        = sorted(df["chrom"].unique())
-chrom_palette = sns.color_palette("tab20", len(chroms))
-chrom_color   = {c: chrom_palette[i % len(chrom_palette)] for i, c in enumerate(chroms)}
+chroms      = sorted(df["chrom"].unique())
+palette_arr = np.array(sns.color_palette("tab20", len(chroms)))
 
-chrom_min  = df.groupby("chrom")["pos"].min()
-chrom_max  = df.groupby("chrom")["pos"].max()
+chrom_grp  = df.groupby("chrom")["pos"]
+chrom_min  = chrom_grp.min()
+chrom_max  = chrom_grp.max()
 chrom_span = (chrom_max - chrom_min).reindex(chroms)
 
 offsets, centers = {}, {}
@@ -45,11 +45,18 @@ for chrom in chroms:
 
 df["x"] = df["chrom"].map(offsets).astype(float) + df["pos"].astype(float)
 
+# Thin to plotting resolution keeping max chi2 per bin so outlier peaks survive.
+x_range  = df["x"].max() - df["x"].min()
+bin_size = max(1.0, x_range / 4800.0)
+df["_bin"] = (df["x"] / bin_size).astype(np.int64)
+df = df.loc[df.groupby(["chrom", "_bin"])["chi2"].idxmax()].drop(columns="_bin")
+
+chrom_to_idx = {c: i for i, c in enumerate(chroms)}
+colors = palette_arr[df["chrom"].map(chrom_to_idx).values % len(palette_arr)]
+
 fig, ax = plt.subplots(figsize=(16, 4))
-for chrom in chroms:
-    sub = df[df["chrom"] == chrom]
-    ax.scatter(sub["x"], sub["chi2"],
-               c=[chrom_color[chrom]] * len(sub), s=4, alpha=0.6, linewidths=0)
+ax.scatter(df["x"].values, df["chi2"].values,
+           c=colors, s=4, alpha=0.6, linewidths=0, rasterized=True)
 
 outliers = df[df["outlier"]]
 if len(outliers):

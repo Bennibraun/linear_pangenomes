@@ -52,12 +52,12 @@ if df.empty:
     raise SystemExit(0)
 
 chroms      = sorted(df["CHROM"].unique())
-palette     = sns.color_palette("tab20", len(chroms))
-chrom_color = {c: palette[i % len(palette)] for i, c in enumerate(chroms)}
+palette_arr = np.array(sns.color_palette("tab20", len(chroms)))
 
-# Compute per-chrom offsets via groupby (vectorized, single pass).
-chrom_min  = df.groupby("CHROM")[pos_col].min()
-chrom_max  = df.groupby("CHROM")[pos_col].max()
+# Compute per-chrom offsets (vectorized).
+chrom_grp  = df.groupby("CHROM")[pos_col]
+chrom_min  = chrom_grp.min()
+chrom_max  = chrom_grp.max()
 chrom_span = (chrom_max - chrom_min).reindex(chroms)
 
 offsets, centers = {}, {}
@@ -69,17 +69,24 @@ for chrom in chroms:
     offset += span + 1_000_000
 
 df["x"] = df["CHROM"].map(offsets).astype(float) + df[pos_col].astype(float)
-# Clip negative FST to 0 for visualization (negatives indicate within-pop
-# diversity exceeds between-pop diversity due to sampling noise; they were
-# previously dropped, which hid all low-differentiation sites and made the
-# plot look uniformly differentiated).
 df["fst_plot"] = df[fst_col].clip(lower=0)
 
+# Thin to plotting resolution: keep the highest-FST point per pixel column so
+# peaks are preserved exactly. At 16 in × 150 dpi ≈ 2400 horizontal pixels;
+# using 2× oversampling (4800 bins) guarantees nothing is missed.
+x_range  = df["x"].max() - df["x"].min()
+bin_size = max(1.0, x_range / 4800.0)
+df["_bin"] = (df["x"] / bin_size).astype(np.int64)
+df = df.loc[df.groupby(["CHROM", "_bin"])["fst_plot"].idxmax()].drop(columns="_bin")
+
+# Assign per-row colors from a pre-built array — single scatter call avoids
+# the PathCollection-per-chromosome overhead that caused the 30+ min runtime.
+chrom_to_idx = {c: i for i, c in enumerate(chroms)}
+colors = palette_arr[df["CHROM"].map(chrom_to_idx).values % len(palette_arr)]
+
 fig, ax = plt.subplots(figsize=(16, 4))
-for chrom in chroms:
-    sub = df[df["CHROM"] == chrom]
-    ax.scatter(sub["x"], sub["fst_plot"],
-               c=[chrom_color[chrom]] * len(sub), s=4, alpha=0.5, linewidths=0)
+ax.scatter(df["x"].values, df["fst_plot"].values,
+           c=colors, s=4, alpha=0.5, linewidths=0, rasterized=True)
 
 ax.set_xticks([centers[c] for c in chroms])
 ax.set_xticklabels(chroms, rotation=45, ha="right", fontsize=6)
