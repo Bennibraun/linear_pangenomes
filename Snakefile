@@ -649,11 +649,11 @@ rule make_augref_alt:
 
 rule align_bwa_augref:
     input:
-        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
-        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
+        fq1=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
+        fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         ref=ALIGN_AUGREF,
         bwt=f"{ALIGN_AUGREF}.bwt",
-        alt=f"{ALIGN_AUGREF}.alt"
+        alt=ancient(f"{ALIGN_AUGREF}.alt")
     output:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai"
@@ -678,8 +678,8 @@ rule align_bwa_augref:
 
 rule align_bwa_conspec:
     input:
-        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
-        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
+        fq1=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
+        fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         ref=ALIGN_CONSPEC,
         bwt=f"{ALIGN_CONSPEC}.bwt"
     output:
@@ -706,8 +706,8 @@ rule align_bwa_conspec:
 
 rule align_bwa_hetspec:
     input:
-        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
-        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
+        fq1=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
+        fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         ref=ALIGN_HETSPEC,
         bwt=f"{ALIGN_HETSPEC}.bwt"
     output:
@@ -734,8 +734,8 @@ rule align_bwa_hetspec:
 
 rule giraffe_align:
     input:
-        fq1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
-        fq2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
+        fq1=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
+        fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         gbz=ALIGN_CACTUS_GBZ,
         dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist",
         min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",
@@ -954,8 +954,8 @@ rule align_short_to_assembly:
     represents the short-read population. This intentionally avoids the
     bwa-based heavy alignment used for variant calling."""
     input:
-        fq1=ALIGN_OUTDIR / "{short_sample}/{short_sample}.R1.ds.fastq.gz",
-        fq2=ALIGN_OUTDIR / "{short_sample}/{short_sample}.R2.ds.fastq.gz",
+        fq1=ancient(ALIGN_OUTDIR / "{short_sample}/{short_sample}.R1.ds.fastq.gz"),
+        fq2=ancient(ALIGN_OUTDIR / "{short_sample}/{short_sample}.R2.ds.fastq.gz"),
         assembly=ASSEMBLY_OUTDIR / "hifiasm/{long_sample}/assembly.fasta"
     output:
         metrics=METRICS_OUTDIR / "short_to_assembly/{short_sample}__{long_sample}.metrics.tsv"
