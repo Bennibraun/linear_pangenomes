@@ -898,6 +898,9 @@ rule align_metrics_per_bam:
     shell:
         r"""
         set -euo pipefail
+        # vg pulls in OpenBLAS which tries to spawn one thread per core and
+        # blows past RLIMIT_NPROC on the slurm short partition. Pin to 1.
+        export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
         mkdir -p {METRICS_OUTDIR}/{wildcards.sample}
 
         # Denominator is the input fastq read count, not the BAM total: vg
@@ -934,6 +937,7 @@ rule align_metrics_per_gam:
     shell:
         r"""
         set -euo pipefail
+        export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
         mkdir -p {METRICS_OUTDIR}/{wildcards.sample}
 
         stats=$(vg stats -a {input.gam})
