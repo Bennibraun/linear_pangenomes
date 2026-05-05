@@ -590,8 +590,8 @@ rule downsample_short_reads:
         r1=lambda wildcards: SHORT_READS_R1[wildcards.sample],
         r2=lambda wildcards: SHORT_READS_R2[wildcards.sample],
     output:
-        r1=temp(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
-        r2=temp(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
+        r1=ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz",
+        r2=ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz",
     conda:
         "envs/align_wgs.yaml"
     threads: 4
