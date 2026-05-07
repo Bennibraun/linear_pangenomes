@@ -36,10 +36,13 @@ ALIGN_AUGREF = REFS_NESTED["augref"]["fasta"]
 ALIGN_CONSPEC = REFS_NESTED["conspec"]["fasta"]
 ALIGN_HETSPEC = REFS_NESTED["hetspec"]["fasta"]
 
-# mc_graph is the Minigraph-Cactus pangenome surjected into conspec linear
-# coordinates via vg surject. It shares the conspec FASTA and all its indices
-# for downstream variant calling, so all {ref}-wildcarded rules (GATK, merge,
-# FST, AFS, π, allelic balance, ROH) automatically pick it up from here.
+# mc_graph is the Minigraph-Cactus pangenome reference. Variants come from
+# vg call on the graph (chunked + per-sample-merged in vg_merge_samples),
+# written to the same bcftools/{ref}/combined/merged.vcf.gz path as the
+# linear refs so {ref}-wildcarded popgen rules (FST, AFS, π, allelic
+# balance, ROH, PCAngsd) pick it up automatically. It shares the conspec
+# FASTA only for indexing (the graph variants live in conspec coordinates
+# because vg call linearizes against the reference path).
 REFS_NESTED["mc_graph"] = dict(REFS_NESTED["conspec"])
 REFERENCE_NAMES = REFERENCE_NAMES + ["mc_graph"]
 
@@ -168,8 +171,19 @@ shell.executable("bash")
 
 # Global wildcard constraints: prevent greedy matching of {ref} across underscores
 # in paths like {ref}_{pop1}_vs_{pop2}_fst.png where both can contain underscores.
+# sample is constrained globally to known sample IDs so wildcards in paths
+# like results/variants/vg/chunks/{sample}/{contig}.vcf.gz don't greedily
+# match sub-paths (e.g. {sample}=chunks/ERR.../NC_...).
+_ALL_SAMPLES = sorted(set(SHORT_SAMPLES) | set(LONG_SAMPLES))
 wildcard_constraints:
-    ref="|".join(REFERENCE_NAMES)
+    ref="|".join(REFERENCE_NAMES),
+    sample="|".join(_ALL_SAMPLES) if _ALL_SAMPLES else "x^",
+    contig="[A-Za-z0-9._-]+"
+
+# References that have a real BAM (everything except mc_graph, which now
+# routes through vg call instead of a surjected BAM). Used by metrics and
+# bcftools rules that must not match mc_graph.
+_BCFTOOLS_REFS = [r for r in REFERENCE_NAMES if r != "mc_graph"]
 
 rule all:
     input:
@@ -200,11 +214,10 @@ rule all:
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam", sample=SHORT_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai", sample=SHORT_SAMPLES),
-        # Alignment metrics
-        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=METRICS_REF_TYPES),
+        # Alignment metrics — mc_graph uses GAM-derived stats, not a BAM
+        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=_BCFTOOLS_REFS),
         expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES),
         METRICS_OUTDIR / "alignment_metrics.tsv",
         # Short reads → individual assemblies (one row per short × long pair)
         expand(METRICS_OUTDIR / "short_to_assembly/{short_sample}__{long_sample}.metrics.tsv",
@@ -763,92 +776,6 @@ rule giraffe_align:
           --rescue-attempts 0 --sample {wildcards.sample} > {output.gam}
         """
 
-rule vg_surject:
-    input:
-        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
-        gbz=ALIGN_CACTUS_GBZ,
-        fai=f"{ALIGN_CONSPEC}.fai",
-    output:
-        bam=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam",
-        bai=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai",
-    conda:
-        "envs/align_wgs.yaml"
-    threads: ALIGN_THREADS
-    resources:
-        slurm_partition="long",
-        runtime=480,
-        mem_mb=16000,
-        cpus=ALIGN_THREADS,
-    shell:
-        r"""
-        set -euo pipefail
-
-        # Build a path-list of the conspec reference contigs so vg surject
-        # only emits alignments onto those paths.
-        # The GBZ uses PanSN-style names (e.g. reference#0#NC_037638.1) rather
-        # than the bare contig names in the .fai, so query the graph directly.
-        vg paths -x {input.gbz} -L \
-            | grep -Ff <(cut -f1 {input.fai}) \
-            > {output.bam}.paths
-
-        vg surject \
-            -x {input.gbz} \
-            -b \
-            -F {output.bam}.paths \
-            -t {threads} \
-            {input.gam} \
-        | samtools sort -@ {threads} -o {output.bam}.unfiltered
-
-        # vg surject derives @SQ LN values from graph path lengths, which can differ
-        # from FASTA lengths when cycles are present in the reference path. Rebuild
-        # the header: keep all non-@SQ lines, regenerate @SQ lines from the conspec
-        # .fai, and inject an @RG line so bcftools can identify the sample.
-        samtools view -H {output.bam}.unfiltered \
-            | grep -v '^@SQ' \
-            > {output.bam}.header
-        awk '{{print "@SQ\tSN:"$1"\tLN:"$2}}' {input.fai} \
-            >> {output.bam}.header
-        echo -e "@RG\tID:{wildcards.sample}\tSM:{wildcards.sample}\tPL:ILLUMINA" \
-            >> {output.bam}.header
-        samtools reheader {output.bam}.header {output.bam}.unfiltered > {output.bam}.reheadered
-
-        # Drop reads whose alignment end exceeds the conspec contig length.
-        # These are reads aligned through cyclic graph paths whose linearized
-        # coordinates fall outside the FASTA contig bounds; keeping them
-        # causes bcftools mpileup to emit one stderr line per read and slow
-        # variant calling to a crawl.
-        samtools view -h {output.bam}.reheadered \
-            | awk -v OFS='\t' '
-                /^@SQ/ {{
-                    sn=""; ln=0;
-                    for (i=1; i<=NF; i++) {{
-                        if ($i ~ /^SN:/) sn=substr($i,4);
-                        if ($i ~ /^LN:/) ln=substr($i,4)+0;
-                    }}
-                    if (sn != "") len[sn]=ln;
-                    print; next;
-                }}
-                /^@/ {{ print; next }}
-                {{
-                    if ($3 == "*") {{ print; next }}
-                    cigar=$6; span=0; n="";
-                    for (i=1; i<=length(cigar); i++) {{
-                        c=substr(cigar,i,1);
-                        if (c ~ /[0-9]/) {{ n=n c }}
-                        else {{
-                            if (c=="M"||c=="D"||c=="N"||c=="="||c=="X") span += n+0;
-                            n="";
-                        }}
-                    }}
-                    end = $4 + span - 1;
-                    if (($3 in len) && end <= len[$3]) print;
-                }}' \
-            | samtools view -b -o {output.bam} -
-
-        rm {output.bam}.unfiltered {output.bam}.reheadered {output.bam}.header {output.bam}.paths
-        samtools index {output.bam}
-        """
-
 rule count_short_reads:
     """Derive the canonical per-sample read count from the conspec BAM.
     bwa-mem writes every input read to the BAM (mapped or not), so
@@ -895,6 +822,10 @@ rule align_metrics_per_bam:
     params:
         min_mapq=METRICS_MIN_MAPQ,
         min_baseq=METRICS_MIN_BASEQ
+    wildcard_constraints:
+        # mc_graph has no BAM (vg call works directly on the GAM). Its metrics
+        # are emitted by align_metrics_per_gam from vg stats instead.
+        ref="|".join(_BCFTOOLS_REFS) if _BCFTOOLS_REFS else "x^"
     shell:
         r"""
         set -euo pipefail
@@ -903,10 +834,9 @@ rule align_metrics_per_bam:
         export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
         mkdir -p {METRICS_OUTDIR}/{wildcards.sample}
 
-        # Denominator is the input fastq read count, not the BAM total: vg
-        # surject (mc_graph) drops reads whose linearized end exceeds the
-        # conspec contig length, so its BAM total < input reads. Using the
-        # fastq count gives a directly comparable mapping rate across refs.
+        # Denominator is the fastq read count, not the BAM total, so the
+        # mapping rate denominator is consistent with how mc_graph reports
+        # it (vg stats Total alignments).
         total=$(cat {input.read_count})
         mapped=$(samtools view -c -F 0x904 {input.bam})
         mean_mapq=$(samtools view -F 0x904 {input.bam} | awk '{{sum+=$5; n++}} END {{if(n>0) printf "%.6f", sum/n; else print "0"}}')
@@ -921,10 +851,16 @@ EOF
         """
 
 rule align_metrics_per_gam:
+    """Emit GAM-derived metrics under both 'cactus' (raw giraffe) and
+    'mc_graph' (the canonical graph-reference label used downstream). With
+    surject removed, mc_graph mapping rate is the true graph mapping rate
+    from giraffe, computed straight from vg stats — no surject loss to
+    account for."""
     input:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
     output:
-        METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv"
+        cactus=METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv",
+        mc_graph=METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv"
     conda:
         "envs/align_metrics.yaml"
     threads:
@@ -944,10 +880,17 @@ rule align_metrics_per_gam:
         total_reads=$(echo "$stats" | awk '/Total alignments:/ {{print $3}}')
         aligned_reads=$(echo "$stats" | awk '/Total aligned:/ {{print $3}}')
         mean_mapq=$(echo "$stats" | awk '/Mapping quality:/ {{print $5}}' | tr -d ',')
+        map_rate=$(awk -v m="$aligned_reads" -v t="$total_reads" \
+            'BEGIN {{if (t>0) printf "%.6f", m/t; else print "0"}}')
 
-        cat > {output} << EOF
+        cat > {output.cactus} << EOF
 sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
-{wildcards.sample}	cactus	$total_reads	$aligned_reads	NA	$mean_mapq	NA
+{wildcards.sample}	cactus	$total_reads	$aligned_reads	$map_rate	$mean_mapq	NA
+EOF
+
+        cat > {output.mc_graph} << EOF
+sample	alignment_type	total_reads	aligned_reads	mapping_rate	mean_mapq	mean_depth
+{wildcards.sample}	mc_graph	$total_reads	$aligned_reads	$map_rate	$mean_mapq	NA
 EOF
         """
 
@@ -1026,8 +969,10 @@ rule align_short_to_assembly_summary:
 
 rule align_metrics_summary:
     input:
-        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=METRICS_REF_TYPES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES)
+        expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv",
+               sample=SHORT_SAMPLES, ref=_BCFTOOLS_REFS),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
+        expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES)
     output:
         metrics=METRICS_OUTDIR / "alignment_metrics.tsv"
     conda:
@@ -1164,6 +1109,12 @@ rule bcftools_joint_call:
         "envs/bcftools.yaml"
     threads:
         BCFTOOLS_THREADS
+    wildcard_constraints:
+        # mc_graph 'reference' draws its variants from vg_merge_samples (graph-
+        # native vg call output), not from a surjected BAM, so this rule must
+        # not match it. Without this constraint Snakemake sees two rules
+        # producing the same output path.
+        ref="|".join(_BCFTOOLS_REFS) if _BCFTOOLS_REFS else "x^"
     resources:
         slurm_partition="long",
         runtime=2880,
@@ -1389,6 +1340,56 @@ rule vg_call:
         set -euo pipefail
         mkdir -p $(dirname {output.vcf})
         bcftools concat -a -Oz --threads {threads} -o {output.vcf} {input.vcfs}
+        tabix -p vcf {output.vcf}
+        """
+
+
+rule vg_merge_samples:
+    """Merge per-sample vg call VCFs into a cohort VCF that the popgen stack
+    consumes the same way as a bcftools-derived merged VCF. Written to the
+    bcftools/{ref}/combined path the {ref}-wildcarded popgen rules expect, so
+    the mc_graph 'reference' is now a synthetic entry whose variants come
+    entirely from vg call rather than from a surjected BAM + bcftools."""
+    input:
+        vcfs=expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
+        tbis=expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
+        fasta=ALIGN_CONSPEC,
+        fai=f"{ALIGN_CONSPEC}.fai",
+    output:
+        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
+    conda:
+        "envs/bcftools.yaml"
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=240,
+        mem_mb=8000,
+        cpus=4,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.vcf})
+
+        # Normalize each per-sample VCF first: vg call snarl decomposition can
+        # emit different ALT orderings per sample at multiallelic sites, which
+        # breaks bcftools merge. norm -m -any splits multiallelics, -f
+        # left-aligns against the conspec FASTA so all samples share REF/ALT
+        # representations at each locus.
+        tmpdir=$(mktemp -d)
+        trap "rm -rf $tmpdir" EXIT
+
+        normed=()
+        for vcf in {input.vcfs}; do
+            base=$(basename "$vcf" .vcf.gz)
+            out="$tmpdir/$base.norm.vcf.gz"
+            bcftools norm -f {input.fasta} -m -any --threads {threads} \
+                -Oz -o "$out" "$vcf"
+            bcftools index -t "$out"
+            normed+=("$out")
+        done
+
+        bcftools merge --threads {threads} -Oz -o {output.vcf} "${{normed[@]}}"
         tabix -p vcf {output.vcf}
         """
 
