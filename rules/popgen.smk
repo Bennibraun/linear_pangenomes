@@ -215,17 +215,18 @@ rule angsd_roh_genotypes:
     with population allele frequencies in INFO/AF (per Jeon et al. 2026).
     bcftools roh on this BCF (downstream) uses --AF-file with these AFs and
     runs in PL mode, which is what the paper does and what works robustly
-    at low/medium coverage. One BCF per ref because the BAM coordinate
-    space differs (conspec/augref/hetspec/mc_graph)."""
+    at low/medium coverage. Runs only on linear refs that have a real BAM —
+    mc_graph routes through mc_graph_roh_inputs instead, since vg call
+    works directly on the GAM and there's no BAM to feed ANGSD."""
     input:
         bams=_bams_for_ref,
         bais=_bais_for_ref,
         fasta=lambda wildcards: _ref_fasta(wildcards),
         fai=lambda wildcards: _ref_fai(wildcards),
     output:
-        bcf=ROH_OUTDIR / "{ref}/angsd.bcf",
-        freqs=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz",
-        tbi=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz.tbi",
+        bcf=ROH_OUTDIR / "{ref}/roh_input.bcf",
+        freqs=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz",
+        tbi=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz.tbi",
     conda:
         "../envs/roh.yaml"
     threads: 8
@@ -234,6 +235,9 @@ rule angsd_roh_genotypes:
         runtime=720,
         mem_mb=16000,
         cpus=8,
+    wildcard_constraints:
+        # mc_graph has no BAM; its ROH inputs come from mc_graph_roh_inputs.
+        ref="|".join(_BCFTOOLS_REFS) if _BCFTOOLS_REFS else "x^"
     params:
         # Paper used setMinDepth=100, setMaxDepth=375 for ~25 samples — i.e.
         # ~4× and ~15× the cohort sample count. Scale with current cohort.
@@ -250,9 +254,9 @@ rule angsd_roh_genotypes:
         trap "rm -f $bam_list" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
 
-        # only_proper_pairs=0: vg surject (mc_graph) doesn't set proper-pair
-        # flags the way bwa does. Setting this to 1 silently drops everything
-        # for the graph ref.
+        # only_proper_pairs=0: graph-derived alignments (in case any survive
+        # here) don't always set proper-pair flags. Setting this to 1 can
+        # silently drop everything.
         angsd -bam "$bam_list" \
               -ref {input.fasta} -anc {input.fasta} \
               -GL 1 -snp_pval 1e-6 \
@@ -265,8 +269,8 @@ rule angsd_roh_genotypes:
               -P {threads} \
               -out {params.prefix}
 
-        # ANGSD writes <prefix>.bcf
-        if [ -f "{params.prefix}.bcf" ] && [ "{params.prefix}.bcf" != "{output.bcf}" ]; then
+        # ANGSD writes <prefix>.bcf — move to the canonical roh_input name.
+        if [ -f "{params.prefix}.bcf" ]; then
             mv "{params.prefix}.bcf" {output.bcf}
         fi
 
@@ -276,13 +280,51 @@ rule angsd_roh_genotypes:
         """
 
 
-rule roh_per_sample:
-    """Per-sample ROH from ANGSD population AF + bcftools roh PL mode.
-    Mirrors the Jeon et al. 2026 ROH workflow."""
+rule mc_graph_roh_inputs:
+    """ROH input pair (BCF + AF table) for mc_graph, derived from the
+    cohort vg call merged VCF rather than from BAMs. vg call's per-sample
+    GTs are already in conspec coordinates, so AF computed across samples
+    here is directly comparable to the ANGSD AF used for linear refs."""
     input:
-        bcf=ROH_OUTDIR / "{ref}/angsd.bcf",
-        freqs=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz",
-        tbi=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz.tbi",
+        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
+    output:
+        bcf=ROH_OUTDIR / "mc_graph/roh_input.bcf",
+        freqs=ROH_OUTDIR / "mc_graph/roh_input.freqs.tab.gz",
+        tbi=ROH_OUTDIR / "mc_graph/roh_input.freqs.tab.gz.tbi",
+    conda:
+        "../envs/roh.yaml"
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=180,
+        mem_mb=8000,
+        cpus=4,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {ROH_OUTDIR}/mc_graph
+
+        # bcftools +fill-tags adds INFO/AF computed from cohort GTs so the
+        # downstream --AF-file path matches what ANGSD provides for linear
+        # refs.
+        bcftools +fill-tags {input.vcf} -- -t AF \
+            | bcftools view -Ob --threads {threads} -o {output.bcf}
+
+        bcftools query -f '%CHROM\t%POS\t%REF,%ALT\t%INFO/AF\n' {output.bcf} \
+            | bgzip -c > {output.freqs}
+        tabix -s1 -b2 -e2 {output.freqs}
+        """
+
+
+rule roh_per_sample:
+    """Per-sample ROH from population AF + bcftools roh PL mode (paper-style
+    workflow). Source of the BCF + AF table differs by ref: ANGSD on BAMs
+    for linear refs, vg-call cohort VCF for mc_graph."""
+    input:
+        bcf=ROH_OUTDIR / "{ref}/roh_input.bcf",
+        freqs=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz",
+        tbi=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz.tbi",
         lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv",
     output:
         roh=ROH_OUTDIR / "{ref}/{sample}.roh.tsv",
