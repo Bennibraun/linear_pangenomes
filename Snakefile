@@ -1150,99 +1150,43 @@ rule bcftools_joint_call:
 # coordinates.
 VG_CHUNKS = [c for c in ROH_CANONICAL_CHROMS if c]
 VG_CHUNK_DIR = CACTUS_OUTDIR / "chunks"
-VG_CHUNK_PREFIX = "vgchunk"
 
 
-rule vg_chunk_graph:
-    """Split the GBZ into one .pg per conspec reference contig. Run once;
-    all samples reuse these chunks. Emits {VG_CHUNK_DIR}/{VG_CHUNK_PREFIX}_<contig>.pg
-    plus a sentinel listing the contigs that actually got chunks (vg chunk
-    skips empty paths)."""
+def _gbz_path_for_contig(gbz, contig, outpath):
+    """Pick the PanSN reference path in the GBZ that corresponds to a bare
+    contig name from the conspec .fai. Cactus emits paths like
+    'reference#0#NC_037638.1', so we match on suffix to pull the canonical one.
+    Written to outpath so vg chunk can consume it via -P (one path per file)."""
+    return (
+        f"vg paths -x {gbz} -L "
+        f"| awk -v c={contig} '$0 ~ \"#\" c \"$\" || $0 == c' "
+        f"| head -n1 > {outpath}"
+    )
+
+
+rule vg_chunk_graph_contig:
+    """Extract one PackedGraph chunk per reference contig from the GBZ. One
+    rule per contig so each output file is explicitly declared — Snakemake
+    can then resolve vg_call_chunk's input without sentinel files."""
     input:
         gbz=VG_GBZ
     output:
-        sentinel=VG_CHUNK_DIR / "graph_chunks.done",
-        chunk_list=VG_CHUNK_DIR / "graph_chunks.txt"
-    conda:
-        "envs/vg_call.yaml"
-    threads: 8
-    resources:
-        slurm_partition="long",
-        runtime=720,
-        mem_mb=64000,
-        cpus=8
-    params:
-        chunks=VG_CHUNKS,
-        prefix=VG_CHUNK_PREFIX,
-        outdir=VG_CHUNK_DIR
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {params.outdir}
-        export OPENBLAS_NUM_THREADS={threads}
-        export OMP_NUM_THREADS={threads}
-
-        # Build a path-list of conspec contigs as PanSN-style paths in the GBZ,
-        # one path per line (vg chunk -P expects this).
-        path_list={params.outdir}/conspec_paths.txt
-        vg paths -x {input.gbz} -L \
-            | grep -Ff <(printf '%s\n' {params.chunks}) \
-            > "$path_list"
-
-        # Chunk graph by reference path. -O pg makes vg call usable downstream
-        # (vg call requires the same graph format passed to vg pack). -P reads
-        # the path list. -b sets the output file basename.
-        cd {params.outdir}
-        vg chunk -x {input.gbz} -O pg -t {threads} \
-            -P conspec_paths.txt \
-            -b {params.prefix}
-
-        # vg chunk names files {prefix}_<idx>_<path>_<start>_<end>.pg. Rename
-        # to {prefix}_<contig>.pg (drop sample/haplotype prefix and coords) so
-        # downstream rules can address them by contig name.
-        for f in {params.prefix}_*.pg; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f" .pg)
-            # Strip leading {prefix}_<idx>_, then strip trailing _<start>_<end>,
-            # then strip any sample#hap# prefix from PanSN, leaving the contig.
-            contig=$(echo "$base" \
-                | sed -E 's/^{params.prefix}_[0-9]+_//' \
-                | sed -E 's/_[0-9]+_[0-9]+$//' \
-                | sed -E 's/^[^#]+#[0-9]+#//')
-            mv "$f" {params.prefix}_"$contig".pg
-        done
-
-        # Record contigs that actually have chunks.
-        ls {params.prefix}_*.pg \
-            | sed -E 's|^{params.prefix}_||; s|\.pg$||' \
-            > {output.chunk_list}
-        touch {output.sentinel}
-        """
-
-
-rule vg_chunk_gam:
-    """Split a per-sample GAM by reference path. Mirrors vg_chunk_graph's
-    naming so per-(sample,contig) pack+call rules can pair them up. Runs
-    once per sample (not per chunk) because vg chunk emits all contigs in a
-    single pass."""
-    input:
-        gbz=VG_GBZ,
-        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
-        chunk_list=VG_CHUNK_DIR / "graph_chunks.txt"
-    output:
-        sentinel=ALIGN_OUTDIR / "{sample}/vg_chunks/gam_chunks.done"
+        graph=VG_CHUNK_DIR / "vgchunk_{contig}.pg"
     conda:
         "envs/vg_call.yaml"
     threads: 4
     resources:
         slurm_partition="long",
-        runtime=720,
+        runtime=480,
         mem_mb=32000,
         cpus=4
     params:
-        outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks",
-        prefix=lambda wc: f"{wc.sample}",
-        chunks=VG_CHUNKS
+        outdir=VG_CHUNK_DIR,
+        path_picker=lambda wc, input, output: _gbz_path_for_contig(
+            input.gbz, wc.contig, f"{output.graph}.path.txt"
+        ),
+    wildcard_constraints:
+        contig="|".join(VG_CHUNKS) if VG_CHUNKS else "x^"
     shell:
         r"""
         set -euo pipefail
@@ -1250,41 +1194,87 @@ rule vg_chunk_gam:
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
 
-        path_list={params.outdir}/conspec_paths.txt
-        vg paths -x {input.gbz} -L \
-            | grep -Ff <(printf '%s\n' {params.chunks}) \
-            > "$path_list"
+        # Resolve the PanSN path name in the GBZ for this contig.
+        {params.path_picker}
+        if [ ! -s {output.graph}.path.txt ]; then
+            echo "ERROR: no GBZ path matched contig {wildcards.contig}" >&2
+            exit 1
+        fi
 
-        cd {params.outdir}
-        # -a annotates GAM input, -g emits per-chunk GAMs (no graph output here).
+        # vg chunk emits {prefix}_<idx>_<path>_<start>_<end>.pg into the
+        # current directory. Run in a per-contig tmpdir so its filename
+        # vagaries don't collide between concurrent jobs, then move the
+        # single output to the deterministic name we declared.
+        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.contig}_XXXX)
+        trap "rm -rf $tmpdir" EXIT
+
+        vg chunk -x {input.gbz} -O pg -t {threads} \
+            -P {output.graph}.path.txt \
+            -b "$tmpdir/chunk"
+
+        produced=$(ls "$tmpdir"/chunk_*.pg | head -n1)
+        mv "$produced" {output.graph}
+        rm -f {output.graph}.path.txt
+        """
+
+
+rule vg_chunk_gam_contig:
+    """Extract one per-sample GAM chunk for one contig. One rule per
+    (sample, contig) so the file is an explicit declared output."""
+    input:
+        gbz=VG_GBZ,
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
+    output:
+        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{contig}.gam"
+    conda:
+        "envs/vg_call.yaml"
+    threads: 2
+    resources:
+        slurm_partition="short",
+        runtime=240,
+        mem_mb=16000,
+        cpus=2
+    params:
+        outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks",
+        path_picker=lambda wc, input, output: _gbz_path_for_contig(
+            input.gbz, wc.contig, f"{output.gam}.path.txt"
+        ),
+    wildcard_constraints:
+        contig="|".join(VG_CHUNKS) if VG_CHUNKS else "x^"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {params.outdir}
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
+
+        {params.path_picker}
+        if [ ! -s {output.gam}.path.txt ]; then
+            echo "ERROR: no GBZ path matched contig {wildcards.contig}" >&2
+            exit 1
+        fi
+
+        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.contig}_XXXX)
+        trap "rm -rf $tmpdir" EXIT
+
+        # -a feeds the input GAM, -g emits per-chunk GAMs.
         vg chunk -x {input.gbz} -t {threads} \
-            -P conspec_paths.txt \
+            -P {output.gam}.path.txt \
             -a {input.gam} -g \
-            -b {params.prefix}
+            -b "$tmpdir/chunk"
 
-        # Same renaming pattern as vg_chunk_graph for pairing.
-        for f in {params.prefix}_*.gam; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f" .gam)
-            contig=$(echo "$base" \
-                | sed -E 's/^{params.prefix}_[0-9]+_//' \
-                | sed -E 's/_[0-9]+_[0-9]+$//' \
-                | sed -E 's/^[^#]+#[0-9]+#//')
-            mv "$f" {params.prefix}_"$contig".gam
-        done
-
-        touch {output.sentinel}
+        produced=$(ls "$tmpdir"/chunk_*.gam | head -n1)
+        mv "$produced" {output.gam}
+        rm -f {output.gam}.path.txt
         """
 
 
 rule vg_call_chunk:
-    """Pack + call on a single (sample, contig) chunk. These are the
-    parallel-friendly leaves of the chunked vg call DAG."""
+    """Pack + call on a single (sample, contig) chunk. The leaves of the
+    parallel vg call DAG."""
     input:
-        graph=VG_CHUNK_DIR / f"{VG_CHUNK_PREFIX}_{{contig}}.pg",
-        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{contig}.gam",
-        graph_sentinel=VG_CHUNK_DIR / "graph_chunks.done",
-        gam_sentinel=ALIGN_OUTDIR / "{sample}/vg_chunks/gam_chunks.done"
+        graph=VG_CHUNK_DIR / "vgchunk_{contig}.pg",
+        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{contig}.gam"
     output:
         vcf=VC_OUTDIR / "vg/chunks/{sample}/{contig}.vcf.gz",
         tbi=VC_OUTDIR / "vg/chunks/{sample}/{contig}.vcf.gz.tbi"
