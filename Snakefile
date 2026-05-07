@@ -1201,8 +1201,8 @@ rule vg_chunk_graph_contig:
             exit 1
         fi
 
-        # vg chunk emits {prefix}_<idx>_<path>_<start>_<end>.pg into the
-        # current directory. Run in a per-contig tmpdir so its filename
+        # vg chunk emits files named with prefix, idx, path, start, end into
+        # the current directory. Run in a per-contig tmpdir so its filename
         # vagaries don't collide between concurrent jobs, then move the
         # single output to the deterministic name we declared.
         tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.contig}_XXXX)
