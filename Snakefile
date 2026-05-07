@@ -1193,33 +1193,203 @@ rule bcftools_joint_call:
           -o {output.vcf}
         """
 
-rule vg_call:
+# vg call chunks: one chunk per conspec contig, derived from the GBZ once and
+# reused across samples. Uses the conspec .fai as the canonical chunk list so
+# the vg call set lines up with the linear bcftools call set on the same
+# coordinates.
+VG_CHUNKS = [c for c in ROH_CANONICAL_CHROMS if c]
+VG_CHUNK_DIR = CACTUS_OUTDIR / "chunks"
+VG_CHUNK_PREFIX = "vgchunk"
+
+
+rule vg_chunk_graph:
+    """Split the GBZ into one .pg per conspec reference contig. Run once;
+    all samples reuse these chunks. Emits {VG_CHUNK_DIR}/{VG_CHUNK_PREFIX}_<contig>.pg
+    plus a sentinel listing the contigs that actually got chunks (vg chunk
+    skips empty paths)."""
     input:
-        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
         gbz=VG_GBZ
     output:
-        vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
+        sentinel=VG_CHUNK_DIR / "graph_chunks.done",
+        chunk_list=VG_CHUNK_DIR / "graph_chunks.txt"
     conda:
         "envs/vg_call.yaml"
-    threads:
-        VG_THREADS
+    threads: 8
     resources:
         slurm_partition="long",
-        runtime=2880,
+        runtime=720,
+        mem_mb=64000,
+        cpus=8
+    params:
+        chunks=VG_CHUNKS,
+        prefix=VG_CHUNK_PREFIX,
+        outdir=VG_CHUNK_DIR
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {params.outdir}
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
+
+        # Build a path-list of conspec contigs as PanSN-style paths in the GBZ,
+        # one path per line (vg chunk -P expects this).
+        path_list={params.outdir}/conspec_paths.txt
+        vg paths -x {input.gbz} -L \
+            | grep -Ff <(printf '%s\n' {params.chunks}) \
+            > "$path_list"
+
+        # Chunk graph by reference path. -O pg makes vg call usable downstream
+        # (vg call requires the same graph format passed to vg pack). -P reads
+        # the path list. -b sets the output file basename.
+        cd {params.outdir}
+        vg chunk -x {input.gbz} -O pg -t {threads} \
+            -P conspec_paths.txt \
+            -b {params.prefix}
+
+        # vg chunk names files {prefix}_<idx>_<path>_<start>_<end>.pg. Rename
+        # to {prefix}_<contig>.pg (drop sample/haplotype prefix and coords) so
+        # downstream rules can address them by contig name.
+        for f in {params.prefix}_*.pg; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .pg)
+            # Strip leading {prefix}_<idx>_, then strip trailing _<start>_<end>,
+            # then strip any sample#hap# prefix from PanSN, leaving the contig.
+            contig=$(echo "$base" \
+                | sed -E 's/^{params.prefix}_[0-9]+_//' \
+                | sed -E 's/_[0-9]+_[0-9]+$//' \
+                | sed -E 's/^[^#]+#[0-9]+#//')
+            mv "$f" {params.prefix}_"$contig".pg
+        done
+
+        # Record contigs that actually have chunks.
+        ls {params.prefix}_*.pg \
+            | sed -E 's|^{params.prefix}_||; s|\.pg$||' \
+            > {output.chunk_list}
+        touch {output.sentinel}
+        """
+
+
+rule vg_chunk_gam:
+    """Split a per-sample GAM by reference path. Mirrors vg_chunk_graph's
+    naming so per-(sample,contig) pack+call rules can pair them up. Runs
+    once per sample (not per chunk) because vg chunk emits all contigs in a
+    single pass."""
+    input:
+        gbz=VG_GBZ,
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
+        chunk_list=VG_CHUNK_DIR / "graph_chunks.txt"
+    output:
+        sentinel=ALIGN_OUTDIR / "{sample}/vg_chunks/gam_chunks.done"
+    conda:
+        "envs/vg_call.yaml"
+    threads: 4
+    resources:
+        slurm_partition="long",
+        runtime=720,
+        mem_mb=32000,
+        cpus=4
+    params:
+        outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks",
+        prefix=lambda wc: f"{wc.sample}",
+        chunks=VG_CHUNKS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {params.outdir}
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
+
+        path_list={params.outdir}/conspec_paths.txt
+        vg paths -x {input.gbz} -L \
+            | grep -Ff <(printf '%s\n' {params.chunks}) \
+            > "$path_list"
+
+        cd {params.outdir}
+        # -a annotates GAM input, -g emits per-chunk GAMs (no graph output here).
+        vg chunk -x {input.gbz} -t {threads} \
+            -P conspec_paths.txt \
+            -a {input.gam} -g \
+            -b {params.prefix}
+
+        # Same renaming pattern as vg_chunk_graph for pairing.
+        for f in {params.prefix}_*.gam; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .gam)
+            contig=$(echo "$base" \
+                | sed -E 's/^{params.prefix}_[0-9]+_//' \
+                | sed -E 's/_[0-9]+_[0-9]+$//' \
+                | sed -E 's/^[^#]+#[0-9]+#//')
+            mv "$f" {params.prefix}_"$contig".gam
+        done
+
+        touch {output.sentinel}
+        """
+
+
+rule vg_call_chunk:
+    """Pack + call on a single (sample, contig) chunk. These are the
+    parallel-friendly leaves of the chunked vg call DAG."""
+    input:
+        graph=VG_CHUNK_DIR / f"{VG_CHUNK_PREFIX}_{{contig}}.pg",
+        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{contig}.gam",
+        graph_sentinel=VG_CHUNK_DIR / "graph_chunks.done",
+        gam_sentinel=ALIGN_OUTDIR / "{sample}/vg_chunks/gam_chunks.done"
+    output:
+        vcf=VC_OUTDIR / "vg/chunks/{sample}/{contig}.vcf.gz",
+        tbi=VC_OUTDIR / "vg/chunks/{sample}/{contig}.vcf.gz.tbi"
+    conda:
+        "envs/vg_call.yaml"
+    threads: VG_THREADS
+    resources:
+        slurm_partition="short",
+        runtime=240,
         mem_mb=16000,
         cpus=VG_THREADS
+    wildcard_constraints:
+        contig="|".join(VG_CHUNKS) if VG_CHUNKS else "x^"
     shell:
         r"""
         set -euo pipefail
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
-        mkdir -p {VC_OUTDIR}/vg
+        mkdir -p $(dirname {output.vcf})
         pack_tmp=$(mktemp --suffix=.pack)
-        vg pack -t {threads} -x {input.gbz} -g {input.gam} -o "$pack_tmp"
-        vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} {input.gbz} | bgzip -c > {output.vcf}
+        trap "rm -f $pack_tmp" EXIT
+
+        # vg call must run on the SAME graph object passed to vg pack — that's
+        # why we pass the .pg chunk to both, not the GBZ.
+        vg pack -t {threads} -e -Q 5 \
+            -x {input.graph} -g {input.gam} -o "$pack_tmp"
+        vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} \
+            {input.graph} \
+          | bgzip -c > {output.vcf}
         tabix -p vcf {output.vcf}
-        rm -f "$pack_tmp"
+        """
+
+
+rule vg_call:
+    """Concatenate per-contig vg call VCFs into the final per-sample VCF.
+    Keeps the original output path so downstream rules don't change."""
+    input:
+        vcfs=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{c}.vcf.gz" for c in VG_CHUNKS],
+        tbis=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{c}.vcf.gz.tbi" for c in VG_CHUNKS]
+    output:
+        vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
+    conda:
+        "envs/vg_call.yaml"
+    threads: 2
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=2
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.vcf})
+        bcftools concat -a -Oz --threads {threads} -o {output.vcf} {input.vcfs}
+        tabix -p vcf {output.vcf}
         """
 
 rule split_vcf_per_sample:

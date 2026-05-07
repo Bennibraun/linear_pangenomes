@@ -2,7 +2,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-vcf            = snakemake.input.vcf
+bcf            = snakemake.input.bcf
+freqs          = snakemake.input.freqs
 lengths_file   = snakemake.input.lengths
 out_roh        = Path(snakemake.output.roh)
 out_froh       = Path(snakemake.output.froh)
@@ -14,7 +15,6 @@ ref            = snakemake.wildcards.ref
 
 out_roh.parent.mkdir(parents=True, exist_ok=True)
 
-# Parse chromosome lengths from this ref's .fai-derived lengths file.
 lengths = {}
 for line in Path(lengths_file).read_text().splitlines():
     parts = line.split()
@@ -26,11 +26,7 @@ for line in Path(lengths_file).read_text().splitlines():
         continue
 
 # Canonical chromosomes for this ref = all contigs except augref-style SV
-# alt contigs (which are short flanked-insertion sequences and shouldn't be
-# treated as part of the diploid genome for F_ROH normalization). This is
-# derived per-ref from its own .fai, so each reference uses its own contigs
-# (the previous global list hard-coded conspec contigs, yielding empty ROH
-# regions when applied to hetspec VCFs).
+# alt contigs. Per-ref because each reference has its own contig set.
 canonical = [c for c in lengths.keys() if not str(c).startswith("SV_")]
 
 regions_arg = ""
@@ -40,13 +36,12 @@ if canonical:
 with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".roh") as tmp:
     roh_tmp = tmp.name
 
-# bcftools roh estimates allele frequency from the supplied VCF's samples.
-# We take the merged (cohort-wide) VCF and subset to {sample} via -s so the
-# AF estimates use the full population. Calling roh on a single-sample VCF
-# with no AF info would fall back to --AF-dflt 0.4 (or fail), giving
-# unreliable ROH boundaries.
+# Paper-style ROH: PL-based HMM (-G30) using population AF from ANGSD's
+# tabixed freq table. The BCF holds genotype likelihoods, and --AF-file
+# overrides any in-BCF AF with the cohort frequencies we extracted.
 subprocess.run(
-    f"bcftools roh {bcftools_args} -s {sample} {regions_arg} -o {roh_tmp} {vcf}",
+    f"bcftools roh {bcftools_args} --AF-file {freqs} -G30 "
+    f"-s {sample} {regions_arg} -o {roh_tmp} {bcf}",
     shell=True, check=True,
 )
 

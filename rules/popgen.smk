@@ -210,28 +210,93 @@ rule ref_lengths:
         """
 
 
-rule roh_per_sample:
+rule angsd_roh_genotypes:
+    """Genotype likelihoods from ANGSD across the cohort, producing a BCF
+    with population allele frequencies in INFO/AF (per Jeon et al. 2026).
+    bcftools roh on this BCF (downstream) uses --AF-file with these AFs and
+    runs in PL mode, which is what the paper does and what works robustly
+    at low/medium coverage. One BCF per ref because the BAM coordinate
+    space differs (conspec/augref/hetspec/mc_graph)."""
     input:
-        # Use the merged (cohort-wide) VCF so bcftools roh estimates allele
-        # frequencies across all samples; with -s {sample} it then reports
-        # ROH for the requested sample only. Calling on a single-sample VCF
-        # cannot estimate AF and yields unreliable ROH boundaries.
-        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
-        lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv"
+        bams=_bams_for_ref,
+        bais=_bais_for_ref,
+        fasta=lambda wildcards: _ref_fasta(wildcards),
+        fai=lambda wildcards: _ref_fai(wildcards),
+    output:
+        bcf=ROH_OUTDIR / "{ref}/angsd.bcf",
+        freqs=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz",
+        tbi=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz.tbi",
+    conda:
+        "../envs/roh.yaml"
+    threads: 8
+    resources:
+        slurm_partition="long",
+        runtime=720,
+        mem_mb=16000,
+        cpus=8,
+    params:
+        # Paper used setMinDepth=100, setMaxDepth=375 for ~25 samples — i.e.
+        # ~4× and ~15× the cohort sample count. Scale with current cohort.
+        min_depth=lambda wc: 4 * len(SHORT_SAMPLES),
+        max_depth=lambda wc: 15 * len(SHORT_SAMPLES),
+        # 80% of samples must have data at a site for it to be used.
+        min_ind=lambda wc: max(1, int(0.8 * len(SHORT_SAMPLES))),
+        prefix=lambda wc: str(ROH_OUTDIR / wc.ref / "angsd"),
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {ROH_OUTDIR}/{wildcards.ref}
+        bam_list=$(mktemp)
+        trap "rm -f $bam_list" EXIT
+        printf '%s\n' {input.bams} > "$bam_list"
+
+        # only_proper_pairs=0: vg surject (mc_graph) doesn't set proper-pair
+        # flags the way bwa does. Setting this to 1 silently drops everything
+        # for the graph ref.
+        angsd -bam "$bam_list" \
+              -ref {input.fasta} -anc {input.fasta} \
+              -GL 1 -snp_pval 1e-6 \
+              -dobcf 1 -dopost 1 -domajorminor 5 -domaf 1 -docounts 1 \
+              -minQ 30 -minMapQ 20 \
+              -minInd {params.min_ind} \
+              -setMinDepth {params.min_depth} -setMaxDepth {params.max_depth} \
+              -only_proper_pairs 0 -remove_bads 1 -uniqueOnly 1 \
+              -baq 2 -C 50 \
+              -P {threads} \
+              -out {params.prefix}
+
+        # ANGSD writes <prefix>.bcf
+        if [ -f "{params.prefix}.bcf" ] && [ "{params.prefix}.bcf" != "{output.bcf}" ]; then
+            mv "{params.prefix}.bcf" {output.bcf}
+        fi
+
+        bcftools query -f '%CHROM\t%POS\t%REF,%ALT\t%INFO/AF\n' {output.bcf} \
+            | bgzip -c > {output.freqs}
+        tabix -s1 -b2 -e2 {output.freqs}
+        """
+
+
+rule roh_per_sample:
+    """Per-sample ROH from ANGSD population AF + bcftools roh PL mode.
+    Mirrors the Jeon et al. 2026 ROH workflow."""
+    input:
+        bcf=ROH_OUTDIR / "{ref}/angsd.bcf",
+        freqs=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz",
+        tbi=ROH_OUTDIR / "{ref}/angsd.freqs.tab.gz.tbi",
+        lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv",
     output:
         roh=ROH_OUTDIR / "{ref}/{sample}.roh.tsv",
-        froh=ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv"
+        froh=ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv",
     conda:
         "../envs/roh.yaml"
     params:
         min_roh_length=ROH_MIN_LENGTH,
-        bcftools_args=ROH_BCFTOOLS_ARGS
+        bcftools_args=ROH_BCFTOOLS_ARGS,
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
-        cpus=1
+        cpus=1,
     script:
         "../scripts/roh_per_sample.py"
 
