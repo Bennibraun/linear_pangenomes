@@ -1144,34 +1144,69 @@ rule bcftools_joint_call:
           -o {output.vcf}
         """
 
-# vg call chunks: one chunk per conspec contig, derived from the GBZ once and
-# reused across samples. Uses the conspec .fai as the canonical chunk list so
-# the vg call set lines up with the linear bcftools call set on the same
-# coordinates.
-VG_CHUNKS = [c for c in ROH_CANONICAL_CHROMS if c]
+# vg call chunks: contigs are bin-packed by length into bundles so the DAG
+# stays tractable (one job per contig × sample blew the SLURM driver's
+# RLIMIT_NPROC on the bee genome's ~177-contig fai). Each bundle's outputs
+# hold every reference path in that bundle in a single .pg / .gam / .vcf, and
+# vg call iterates them in one invocation.
 VG_CHUNK_DIR = CACTUS_OUTDIR / "chunks"
+VG_BUNDLE_TARGET_BP = 20_000_000  # ceiling per bundle; tune to trade off DAG size vs per-job runtime
 
 
-def _gbz_path_for_contig(gbz, contig, outpath):
-    """Pick the PanSN reference path in the GBZ that corresponds to a bare
-    contig name from the conspec .fai. Cactus emits paths like
-    'reference#0#NC_037638.1', so we match on suffix to pull the canonical one.
-    Written to outpath so vg chunk can consume it via -P (one path per file)."""
-    return (
-        f"vg paths -x {gbz} -L "
-        f"| awk -v c={contig} '$0 ~ \"#\" c \"$\" || $0 == c' "
-        f"| head -n1 > {outpath}"
-    )
+def _bin_pack_bundles(fai_path, target_bp):
+    """Single-pass greedy bin-pack. Walk contigs in descending length,
+    accumulating into the current bundle until its total exceeds target_bp,
+    then start a new one. Contigs longer than target_bp end up alone (each
+    closes its bundle on the first append)."""
+    fai = Path(fai_path)
+    if not fai.exists():
+        return {}
+    pairs = []
+    for line in fai.read_text().splitlines():
+        if not line.strip():
+            continue
+        cols = line.split("\t")
+        pairs.append((cols[0], int(cols[1])))
+    pairs.sort(key=lambda x: -x[1])
+    bundles, current, current_bp, idx = {}, [], 0, 0
+    for contig, length in pairs:
+        current.append(contig)
+        current_bp += length
+        if current_bp >= target_bp:
+            bundles[f"bundle{idx:03d}"] = current
+            idx += 1
+            current, current_bp = [], 0
+    if current:
+        bundles[f"bundle{idx:03d}"] = current
+    return bundles
 
 
-rule vg_chunk_graph_contig:
-    """Extract one PackedGraph chunk per reference contig from the GBZ. One
-    rule per contig so each output file is explicitly declared — Snakemake
-    can then resolve vg_call_chunk's input without sentinel files."""
+VG_BUNDLES = _bin_pack_bundles(_conspec_fai, VG_BUNDLE_TARGET_BP)
+VG_BUNDLE_NAMES = list(VG_BUNDLES.keys())
+
+
+def _gbz_paths_for_bundle(gbz, bundle_name, outpath):
+    """Resolve PanSN reference paths in the GBZ for every contig in this
+    bundle, one per line. vg chunk's -P consumes the multi-line file and
+    emits one chunk per path in a single invocation."""
+    cmds = [f": > {outpath}"]
+    for contig in VG_BUNDLES[bundle_name]:
+        cmds.append(
+            f"vg paths -x {gbz} -L "
+            f"| awk -v c={contig} '$0 ~ \"#\" c \"$\" || $0 == c' "
+            f"| head -n1 >> {outpath}"
+        )
+    return " && ".join(cmds)
+
+
+rule vg_chunk_graph_bundle:
+    """Extract one PackedGraph subgraph per bundle. The .pg holds every
+    reference path assigned to the bundle plus 2000 nodes of context (enough
+    to capture attached snarls), combined into one graph via vg combine."""
     input:
         gbz=VG_GBZ
     output:
-        graph=VG_CHUNK_DIR / "vgchunk_{contig}.pg"
+        graph=VG_CHUNK_DIR / "vgchunk_{bundle}.pg"
     conda:
         "envs/vg_call.yaml"
     threads: 4
@@ -1182,11 +1217,11 @@ rule vg_chunk_graph_contig:
         cpus=4
     params:
         outdir=VG_CHUNK_DIR,
-        path_picker=lambda wc, input, output: _gbz_path_for_contig(
-            input.gbz, wc.contig, f"{output.graph}.path.txt"
+        path_picker=lambda wc, input, output: _gbz_paths_for_bundle(
+            input.gbz, wc.bundle, f"{output.graph}.paths.txt"
         ),
     wildcard_constraints:
-        contig="|".join(VG_CHUNKS) if VG_CHUNKS else "x^"
+        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
     shell:
         r"""
         set -euo pipefail
@@ -1194,38 +1229,40 @@ rule vg_chunk_graph_contig:
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
 
-        # Resolve the PanSN path name in the GBZ for this contig.
         {params.path_picker}
-        if [ ! -s {output.graph}.path.txt ]; then
-            echo "ERROR: no GBZ path matched contig {wildcards.contig}" >&2
+        if [ ! -s {output.graph}.paths.txt ]; then
+            echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
             exit 1
         fi
 
-        # vg chunk emits files named with prefix, idx, path, start, end into
-        # the current directory. Run in a per-contig tmpdir so its filename
-        # vagaries don't collide between concurrent jobs, then move the
-        # single output to the deterministic name we declared.
-        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.contig}_XXXX)
+        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.bundle}_XXXX)
         trap "rm -rf $tmpdir" EXIT
 
-        vg chunk -x {input.gbz} -O pg -t {threads} \
-            -P {output.graph}.path.txt \
+        # -c 2000: 2000 nodes of context around each path. vg chunk requires
+        # context (or -S snarls) when chunking on paths; this size pulls in
+        # the attached variant bubbles without bloating the graph.
+        vg chunk -x {input.gbz} -O pg -t {threads} -c 2000 \
+            -P {output.graph}.paths.txt \
             -b "$tmpdir/chunk"
 
-        produced=$(ls "$tmpdir"/chunk_*.pg | head -n1)
-        mv "$produced" {output.graph}
-        rm -f {output.graph}.path.txt
+        produced=( "$tmpdir"/chunk_*.pg )
+        if [ ${{#produced[@]}} -eq 1 ]; then
+            mv "${{produced[0]}}" {output.graph}
+        else
+            vg combine "${{produced[@]}}" > {output.graph}
+        fi
+        rm -f {output.graph}.paths.txt
         """
 
 
-rule vg_chunk_gam_contig:
-    """Extract one per-sample GAM chunk for one contig. One rule per
-    (sample, contig) so the file is an explicit declared output."""
+rule vg_chunk_gam_bundle:
+    """Per-sample GAM chunk for one bundle. Uses the same multi-path file as
+    the graph chunk so GAM and graph cover identical reference regions."""
     input:
         gbz=VG_GBZ,
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
     output:
-        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{contig}.gam"
+        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{bundle}.gam"
     conda:
         "envs/vg_call.yaml"
     threads: 2
@@ -1236,11 +1273,11 @@ rule vg_chunk_gam_contig:
         cpus=2
     params:
         outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks",
-        path_picker=lambda wc, input, output: _gbz_path_for_contig(
-            input.gbz, wc.contig, f"{output.gam}.path.txt"
+        path_picker=lambda wc, input, output: _gbz_paths_for_bundle(
+            input.gbz, wc.bundle, f"{output.gam}.paths.txt"
         ),
     wildcard_constraints:
-        contig="|".join(VG_CHUNKS) if VG_CHUNKS else "x^"
+        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
     shell:
         r"""
         set -euo pipefail
@@ -1249,35 +1286,35 @@ rule vg_chunk_gam_contig:
         export OMP_NUM_THREADS={threads}
 
         {params.path_picker}
-        if [ ! -s {output.gam}.path.txt ]; then
-            echo "ERROR: no GBZ path matched contig {wildcards.contig}" >&2
+        if [ ! -s {output.gam}.paths.txt ]; then
+            echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
             exit 1
         fi
 
-        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.contig}_XXXX)
+        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.bundle}_XXXX)
         trap "rm -rf $tmpdir" EXIT
 
-        # -a feeds the input GAM, -g emits per-chunk GAMs.
-        vg chunk -x {input.gbz} -t {threads} \
-            -P {output.gam}.path.txt \
+        vg chunk -x {input.gbz} -t {threads} -c 2000 \
+            -P {output.gam}.paths.txt \
             -a {input.gam} -g \
             -b "$tmpdir/chunk"
 
-        produced=$(ls "$tmpdir"/chunk_*.gam | head -n1)
-        mv "$produced" {output.gam}
-        rm -f {output.gam}.path.txt
+        # GAM is a length-prefixed protobuf stream; cat-concatenation is a
+        # valid GAM stream of the union.
+        cat "$tmpdir"/chunk_*.gam > {output.gam}
+        rm -f {output.gam}.paths.txt
         """
 
 
 rule vg_call_chunk:
-    """Pack + call on a single (sample, contig) chunk. The leaves of the
-    parallel vg call DAG."""
+    """Pack + call on a single (sample, bundle). The bundle .pg contains
+    every reference path; vg call iterates them in one invocation."""
     input:
-        graph=VG_CHUNK_DIR / "vgchunk_{contig}.pg",
-        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{contig}.gam"
+        graph=VG_CHUNK_DIR / "vgchunk_{bundle}.pg",
+        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{bundle}.gam"
     output:
-        vcf=VC_OUTDIR / "vg/chunks/{sample}/{contig}.vcf.gz",
-        tbi=VC_OUTDIR / "vg/chunks/{sample}/{contig}.vcf.gz.tbi"
+        vcf=VC_OUTDIR / "vg/chunks/{sample}/{bundle}.vcf.gz",
+        tbi=VC_OUTDIR / "vg/chunks/{sample}/{bundle}.vcf.gz.tbi"
     conda:
         "envs/vg_call.yaml"
     threads: VG_THREADS
@@ -1287,7 +1324,7 @@ rule vg_call_chunk:
         mem_mb=16000,
         cpus=VG_THREADS
     wildcard_constraints:
-        contig="|".join(VG_CHUNKS) if VG_CHUNKS else "x^"
+        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
     shell:
         r"""
         set -euo pipefail
@@ -1298,7 +1335,7 @@ rule vg_call_chunk:
         trap "rm -f $pack_tmp" EXIT
 
         # vg call must run on the SAME graph object passed to vg pack — that's
-        # why we pass the .pg chunk to both, not the GBZ.
+        # why we pass the .pg bundle to both, not the GBZ.
         vg pack -t {threads} -e -Q 5 \
             -x {input.graph} -g {input.gam} -o "$pack_tmp"
         vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} \
@@ -1309,11 +1346,12 @@ rule vg_call_chunk:
 
 
 rule vg_call:
-    """Concatenate per-contig vg call VCFs into the final per-sample VCF.
-    Keeps the original output path so downstream rules don't change."""
+    """Concatenate per-bundle vg call VCFs into the final per-sample VCF.
+    Bundles are bin-packed by size, not genome order, so we sort after
+    concat to restore canonical chromosome ordering for downstream rules."""
     input:
-        vcfs=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{c}.vcf.gz" for c in VG_CHUNKS],
-        tbis=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{c}.vcf.gz.tbi" for c in VG_CHUNKS]
+        vcfs=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz" for b in VG_BUNDLE_NAMES],
+        tbis=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz.tbi" for b in VG_BUNDLE_NAMES]
     output:
         vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
@@ -1329,7 +1367,10 @@ rule vg_call:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {output.vcf})
-        bcftools concat -a -Oz --threads {threads} -o {output.vcf} {input.vcfs}
+        tmp_concat=$(mktemp --suffix=.vcf.gz)
+        trap "rm -f $tmp_concat" EXIT
+        bcftools concat -a -Oz --threads {threads} -o "$tmp_concat" {input.vcfs}
+        bcftools sort -Oz -o {output.vcf} "$tmp_concat"
         tabix -p vcf {output.vcf}
         """
 
