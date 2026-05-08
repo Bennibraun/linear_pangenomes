@@ -1,3 +1,17 @@
+import os
+
+# Cap implicit BLAS / numerical-library thread fans at 1 BEFORE pandas/numpy
+# import below — set in the snakemake parent process so every subprocess
+# (shell, script, run) inherits it. Without this, anything that touches
+# numpy/scipy/sklearn/matplotlib (vg, pcangsd, plotting scripts) tries to
+# spawn one OpenBLAS thread per host core and trips RLIMIT_NPROC inside the
+# slurm cgroup. shell.prefix below is belt-and-suspenders for shell rules.
+for _v in (
+    "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+):
+    os.environ.setdefault(_v, "1")
+
 from pathlib import Path
 import pandas as pd
 
@@ -168,6 +182,17 @@ singularity_args = ("--bind " + ",".join(_bind_paths)) if _bind_paths else ""
 
 
 shell.executable("bash")
+
+# Cap implicit BLAS / numerical-library thread fans at 1 for EVERY shell rule.
+# Without this, anything that imports numpy/scipy/sklearn/matplotlib (vg, pcangsd,
+# any python plotting rule) tries to spin up one OpenBLAS thread per host core
+# and trips RLIMIT_NPROC inside the slurm cgroup. Rules that genuinely need
+# parallel BLAS can still override these in their shell body. Applies globally
+# so we stop playing whack-a-mole rule-by-rule.
+shell.prefix(
+    "export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 "
+    "NUMEXPR_NUM_THREADS=1 BLIS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 ; "
+)
 
 # Global wildcard constraints: prevent greedy matching of {ref} across underscores
 # in paths like {ref}_{pop1}_vs_{pop2}_fst.png where both can contain underscores.

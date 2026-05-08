@@ -444,7 +444,7 @@ rule pcangsd:
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
     output:
         cov=PCANGSD_OUTDIR / "{ref}/pcangsd.cov",
-        selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection.npy",
+        selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection",
         samples=PCANGSD_OUTDIR / "{ref}/samples.txt",
         snp_coords=PCANGSD_OUTDIR / "{ref}/snp_coords.tsv",
     conda:
@@ -462,19 +462,28 @@ rule pcangsd:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {params.prefix})
+        tmpdir=$(mktemp -d)
+        trap "rm -rf $tmpdir" EXIT
 
-        # Sample order in VCF = row order in covariance matrix
-        bcftools query -l {input.vcf} > {output.samples}
+        # pcangsd >=1.x dropped --vcf / --n_eig and now consumes PLINK BED via
+        # -p PREFIX. Convert with plink first.
+        # --const-fid 0: VCF has no family info; assign FID=0 to every sample.
+        # --allow-extra-chr: tolerate non-numeric contig names (NC_*, NW_*).
+        plink --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+              --out "$tmpdir/plink"
 
-        # SNP coordinates in same order PCAngsd sees them
-        bcftools query -f '%CHROM\t%POS\t%ID\n' {input.vcf} > {output.snp_coords}
+        # Derive samples.txt and snp_coords.tsv from the PLINK files, NOT the
+        # VCF — pcangsd's row/column order matches the .fam/.bim, which can
+        # differ from the input VCF if plink reordered chromosomes.
+        awk '{{print $2}}' "$tmpdir/plink.fam" > {output.samples}
+        awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > {output.snp_coords}
 
         pcangsd \
-            --vcf {input.vcf} \
-            --threads {threads} \
-            --n_eig {params.n_pcs} \
+            -p "$tmpdir/plink" \
+            -t {threads} \
+            -e {params.n_pcs} \
             --selection \
-            --out {params.prefix}
+            -o {params.prefix}
         """
 
 
@@ -485,7 +494,7 @@ rule fst_outliers:
     coordinates, chi-squared score, p-value, q-value, and outlier flag.
     """
     input:
-        selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection.npy",
+        selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection",
         snp_coords=PCANGSD_OUTDIR / "{ref}/snp_coords.tsv",
     output:
         outliers=PCANGSD_OUTDIR / "{ref}/fst_outliers.tsv",

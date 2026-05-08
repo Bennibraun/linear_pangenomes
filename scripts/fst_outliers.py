@@ -8,11 +8,10 @@ snp_coords_file = snakemake.input.snp_coords
 out_outliers    = snakemake.output.outliers
 fdr             = snakemake.params.fdr
 
-# pcangsd --selection writes a 2D array of shape (n_sites, n_pcs). Each
-# column is an independent chi-squared statistic with df=1. The previous
-# implementation assumed a 1D array and silently produced wrong results
-# whenever n_pcs > 1.
-scores = np.load(selection_file)
+# pcangsd --selection writes a 2D array of shape (n_sites, n_pcs) as plain
+# text (since pcangsd v1.x; earlier versions wrote .npy). Each column is an
+# independent chi-squared statistic with df=1.
+scores = np.loadtxt(selection_file, ndmin=2)
 coords = pd.read_csv(snp_coords_file, sep="\t", names=["chrom", "pos", "id"])
 
 if scores.ndim == 1:
