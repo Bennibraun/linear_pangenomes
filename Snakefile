@@ -1185,18 +1185,69 @@ VG_BUNDLES = _bin_pack_bundles(_conspec_fai, VG_BUNDLE_TARGET_BP)
 VG_BUNDLE_NAMES = list(VG_BUNDLES.keys())
 
 
-def _gbz_paths_for_bundle(gbz, bundle_name, outpath):
-    """Resolve PanSN reference paths in the GBZ for every contig in this
-    bundle, one per line. vg chunk's -P consumes the multi-line file and
-    emits one chunk per path in a single invocation."""
-    cmds = [f": > {outpath}"]
-    for contig in VG_BUNDLES[bundle_name]:
-        cmds.append(
-            f"vg paths -x {gbz} -L "
-            f"| awk -v c={contig} '$0 ~ \"#\" c \"$\" || $0 == c' "
-            f"| head -n1 >> {outpath}"
-        )
-    return " && ".join(cmds)
+rule vg_bundle_paths:
+    """Resolve PanSN reference paths in the GBZ for the contigs assigned to
+    one bundle. One vg-paths scan per bundle; downstream chunk rules read
+    the cached file via -P instead of re-resolving."""
+    input:
+        gbz=VG_GBZ
+    output:
+        paths=VG_CHUNK_DIR / "paths_{bundle}.txt"
+    conda:
+        "envs/vg_call.yaml"
+    threads: 1
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1
+    params:
+        contigs=lambda wc: " ".join(VG_BUNDLES[wc.bundle])
+    wildcard_constraints:
+        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.paths})
+        all=$(mktemp)
+        trap "rm -f $all" EXIT
+        vg paths -x {input.gbz} -L > "$all"
+        : > {output.paths}
+        for c in {params.contigs}; do
+            awk -v c=$c '$0 ~ "#" c "$" || $0 == c' "$all" | head -n1 >> {output.paths}
+        done
+        if [ ! -s {output.paths} ]; then
+            echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
+            exit 1
+        fi
+        """
+
+
+rule vg_gamsort:
+    """Sort + index the per-sample GAM. vg chunk -a needs an indexed GAM
+    so it can pull reads aligned to specific reference paths; without the
+    .gai it bails with 'could not open file'. Marked temp() because each
+    sorted GAM is only consumed by the per-bundle chunk rules."""
+    input:
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
+    output:
+        gam=temp(ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam"),
+        gai=temp(ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam.gai")
+    conda:
+        "envs/vg_call.yaml"
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=240,
+        mem_mb=16000,
+        cpus=4
+    shell:
+        r"""
+        set -euo pipefail
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
+        vg gamsort -t {threads} -i {output.gai} {input.gam} > {output.gam}
+        """
 
 
 rule vg_chunk_graph_bundle:
@@ -1204,7 +1255,8 @@ rule vg_chunk_graph_bundle:
     reference path assigned to the bundle plus 2000 nodes of context (enough
     to capture attached snarls), combined into one graph via vg combine."""
     input:
-        gbz=VG_GBZ
+        gbz=VG_GBZ,
+        paths=VG_CHUNK_DIR / "paths_{bundle}.txt"
     output:
         graph=VG_CHUNK_DIR / "vgchunk_{bundle}.pg"
     conda:
@@ -1216,10 +1268,7 @@ rule vg_chunk_graph_bundle:
         mem_mb=32000,
         cpus=4
     params:
-        outdir=VG_CHUNK_DIR,
-        path_picker=lambda wc, input, output: _gbz_paths_for_bundle(
-            input.gbz, wc.bundle, f"{output.graph}.paths.txt"
-        ),
+        outdir=VG_CHUNK_DIR
     wildcard_constraints:
         bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
     shell:
@@ -1229,12 +1278,6 @@ rule vg_chunk_graph_bundle:
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
 
-        {params.path_picker}
-        if [ ! -s {output.graph}.paths.txt ]; then
-            echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
-            exit 1
-        fi
-
         tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.bundle}_XXXX)
         trap "rm -rf $tmpdir" EXIT
 
@@ -1242,7 +1285,7 @@ rule vg_chunk_graph_bundle:
         # context (or -S snarls) when chunking on paths; this size pulls in
         # the attached variant bubbles without bloating the graph.
         vg chunk -x {input.gbz} -O pg -t {threads} -c 2000 \
-            -P {output.graph}.paths.txt \
+            -P {input.paths} \
             -b "$tmpdir/chunk"
 
         produced=( "$tmpdir"/chunk_*.pg )
@@ -1251,16 +1294,18 @@ rule vg_chunk_graph_bundle:
         else
             vg combine "${{produced[@]}}" > {output.graph}
         fi
-        rm -f {output.graph}.paths.txt
         """
 
 
 rule vg_chunk_gam_bundle:
-    """Per-sample GAM chunk for one bundle. Uses the same multi-path file as
-    the graph chunk so GAM and graph cover identical reference regions."""
+    """Per-sample GAM chunk for one bundle. Reuses the bundle paths file
+    so GAM and graph cover identical reference regions. Consumes the
+    sorted+indexed GAM from vg_gamsort."""
     input:
         gbz=VG_GBZ,
-        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
+        paths=VG_CHUNK_DIR / "paths_{bundle}.txt",
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam",
+        gai=ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam.gai"
     output:
         gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{bundle}.gam"
     conda:
@@ -1272,10 +1317,7 @@ rule vg_chunk_gam_bundle:
         mem_mb=16000,
         cpus=2
     params:
-        outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks",
-        path_picker=lambda wc, input, output: _gbz_paths_for_bundle(
-            input.gbz, wc.bundle, f"{output.gam}.paths.txt"
-        ),
+        outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks"
     wildcard_constraints:
         bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
     shell:
@@ -1285,24 +1327,17 @@ rule vg_chunk_gam_bundle:
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
 
-        {params.path_picker}
-        if [ ! -s {output.gam}.paths.txt ]; then
-            echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
-            exit 1
-        fi
-
         tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.bundle}_XXXX)
         trap "rm -rf $tmpdir" EXIT
 
         vg chunk -x {input.gbz} -t {threads} -c 2000 \
-            -P {output.gam}.paths.txt \
+            -P {input.paths} \
             -a {input.gam} -g \
             -b "$tmpdir/chunk"
 
         # GAM is a length-prefixed protobuf stream; cat-concatenation is a
         # valid GAM stream of the union.
         cat "$tmpdir"/chunk_*.gam > {output.gam}
-        rm -f {output.gam}.paths.txt
         """
 
 
