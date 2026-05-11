@@ -1239,7 +1239,7 @@ rule vg_bundle_paths:
         vg paths -x {input.gbz} -L > "$all"
         : > {output.paths}
         for c in {params.contigs}; do
-            awk -v c=$c '$0 ~ "#" c "$" || $0 == c' "$all" | head -n1 >> {output.paths}
+            awk -v c="$c" 'BEGIN{{FS="#"}} (NF>=3 && $3==c) || $0==c' "$all" >> {output.paths}
         done
         if [ ! -s {output.paths} ]; then
             echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
@@ -1408,10 +1408,13 @@ rule vg_call_chunk:
 rule vg_call:
     """Concatenate per-bundle vg call VCFs into the final per-sample VCF.
     Bundles are bin-packed by size, not genome order, so we sort after
-    concat to restore canonical chromosome ordering for downstream rules."""
+    concat to restore canonical chromosome ordering for downstream rules.
+    Also strips any residual PanSN prefixes (sample#hap#contig#frag →
+    contig) so CHROM matches the conspec FASTA for downstream bcftools."""
     input:
         vcfs=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz" for b in VG_BUNDLE_NAMES],
-        tbis=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz.tbi" for b in VG_BUNDLE_NAMES]
+        tbis=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz.tbi" for b in VG_BUNDLE_NAMES],
+        fai=f"{ALIGN_CONSPEC}.fai",
     output:
         vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
@@ -1428,9 +1431,33 @@ rule vg_call:
         set -euo pipefail
         mkdir -p $(dirname {output.vcf})
         tmp_concat=$(mktemp --suffix=.vcf.gz)
-        trap "rm -f $tmp_concat" EXIT
+        tmp_renamed=$(mktemp --suffix=.vcf.gz)
+        trap "rm -f $tmp_concat $tmp_renamed" EXIT
+
         bcftools concat -a -Oz --threads {threads} -o "$tmp_concat" {input.vcfs}
-        bcftools sort -Oz -o {output.vcf} "$tmp_concat"
+
+        # Strip PanSN prefixes from CHROM if present (sample#hap#contig#frag → contig).
+        # Build a rename map from whatever CHROMs appear in the VCF.
+        rename_map=$(mktemp)
+        trap "rm -f $tmp_concat $tmp_renamed $rename_map" EXIT
+        bcftools view -h "$tmp_concat" \
+            | grep '^##contig=<ID=' \
+            | sed 's/##contig=<ID=//;s/,.*//' \
+            | while read -r chrom; do
+                # 4-field PanSN: take field 3;  3-field: take field 3;  plain: keep as-is
+                n=$(echo "$chrom" | awk -F'#' '{{print NF}}')
+                if [ "$n" -ge 3 ]; then
+                    plain=$(echo "$chrom" | cut -d'#' -f3)
+                    echo "$chrom $plain"
+                fi
+            done > "$rename_map"
+
+        if [ -s "$rename_map" ]; then
+            bcftools annotate --rename-chrs "$rename_map" -Oz -o "$tmp_renamed" "$tmp_concat"
+            bcftools sort -Oz -o {output.vcf} "$tmp_renamed"
+        else
+            bcftools sort -Oz -o {output.vcf} "$tmp_concat"
+        fi
         tabix -p vcf {output.vcf}
         """
 
