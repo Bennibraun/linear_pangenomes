@@ -225,6 +225,7 @@ rule angsd_roh_genotypes:
         fai=lambda wildcards: _ref_fai(wildcards),
     output:
         bcf=ROH_OUTDIR / "{ref}/roh_input.bcf",
+        csi=ROH_OUTDIR / "{ref}/roh_input.bcf.csi",
         freqs=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz",
         tbi=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz.tbi",
     conda:
@@ -274,6 +275,8 @@ rule angsd_roh_genotypes:
             mv "{params.prefix}.bcf" {output.bcf}
         fi
 
+        bcftools index {output.bcf}
+
         bcftools query -f '%CHROM\t%POS\t%REF,%ALT\t%INFO/AF\n' {output.bcf} \
             | bgzip -c > {output.freqs}
         tabix -s1 -b2 -e2 {output.freqs}
@@ -290,6 +293,7 @@ rule mc_graph_roh_inputs:
         tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
     output:
         bcf=ROH_OUTDIR / "mc_graph/roh_input.bcf",
+        csi=ROH_OUTDIR / "mc_graph/roh_input.bcf.csi",
         freqs=ROH_OUTDIR / "mc_graph/roh_input.freqs.tab.gz",
         tbi=ROH_OUTDIR / "mc_graph/roh_input.freqs.tab.gz.tbi",
     conda:
@@ -311,6 +315,8 @@ rule mc_graph_roh_inputs:
         bcftools +fill-tags {input.vcf} -- -t AF \
             | bcftools view -Ob --threads {threads} -o {output.bcf}
 
+        bcftools index {output.bcf}
+
         bcftools query -f '%CHROM\t%POS\t%REF,%ALT\t%INFO/AF\n' {output.bcf} \
             | bgzip -c > {output.freqs}
         tabix -s1 -b2 -e2 {output.freqs}
@@ -323,6 +329,7 @@ rule roh_per_sample:
     for linear refs, vg-call cohort VCF for mc_graph."""
     input:
         bcf=ROH_OUTDIR / "{ref}/roh_input.bcf",
+        csi=ROH_OUTDIR / "{ref}/roh_input.bcf.csi",
         freqs=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz",
         tbi=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz.tbi",
         lengths=lambda wildcards: ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv",
