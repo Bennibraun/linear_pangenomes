@@ -1239,7 +1239,15 @@ rule vg_bundle_paths:
         vg paths -x {input.gbz} -L > "$all"
         : > {output.paths}
         for c in {params.contigs}; do
-            awk -v c="$c" 'BEGIN{{FS="#"}} (NF>=3 && $3==c) || $0==c' "$all" >> {output.paths}
+            # Collect subpaths (with bracket offsets) and the base path separately.
+            # If subpaths exist, use only those — the base path name is not a
+            # concrete path in the GBZ and vg chunk rejects it without coordinates.
+            sub=$(awk -v c="$c" 'BEGIN{{FS="#"}} NF>=3 && $3~"^"c"\\[" {{print}}' "$all")
+            if [ -n "$sub" ]; then
+                echo "$sub" >> {output.paths}
+            else
+                awk -v c="$c" 'BEGIN{{FS="#"}} (NF>=3 && $3==c) || $0==c' "$all" | head -n1 >> {output.paths}
+            fi
         done
         if [ ! -s {output.paths} ]; then
             echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
@@ -1264,7 +1272,7 @@ rule vg_gamsort:
     resources:
         slurm_partition="short",
         runtime=240,
-        mem_mb=16000,
+        mem_mb=32000,
         cpus=4
     shell:
         r"""
