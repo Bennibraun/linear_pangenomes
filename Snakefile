@@ -13,6 +13,11 @@ for _v in (
     os.environ.setdefault(_v, "1")
 
 from pathlib import Path
+
+_scratch_tmpdir = str(Path("results/tmp").resolve())
+Path(_scratch_tmpdir).mkdir(parents=True, exist_ok=True)
+for _v in ("TMPDIR", "TEMPDIR", "TMP", "TEMP"):
+    os.environ[_v] = _scratch_tmpdir
 import pandas as pd
 
 configfile: "config/config.yaml"
@@ -1149,7 +1154,7 @@ rule bcftools_joint_call:
         r"""
         set -euo pipefail
         mkdir -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined
-        bam_list=$(mktemp)
+        bam_list=$(mktemp -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined)
         trap "rm -f $bam_list" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
         bcftools mpileup \
@@ -1234,7 +1239,7 @@ rule vg_bundle_paths:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {output.paths})
-        all=$(mktemp)
+        all=$(mktemp -p $(dirname {output.paths}))
         trap "rm -f $all" EXIT
         vg paths -x {input.gbz} -L > "$all"
         : > {output.paths}
@@ -1411,7 +1416,7 @@ rule vg_call_chunk:
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.vcf})
-        pack_tmp=$(mktemp --suffix=.pack)
+        pack_tmp=$(mktemp -p $(dirname {output.vcf}) --suffix=.pack)
         trap "rm -f $pack_tmp" EXIT
 
         # vg call must run on the SAME graph object passed to vg pack — that's
@@ -1450,15 +1455,16 @@ rule vg_call:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {output.vcf})
-        tmp_concat=$(mktemp --suffix=.vcf.gz)
-        tmp_renamed=$(mktemp --suffix=.vcf.gz)
+        _outdir=$(dirname {output.vcf})
+        tmp_concat=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
+        tmp_renamed=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
         trap "rm -f $tmp_concat $tmp_renamed" EXIT
 
         bcftools concat -a -Oz --threads {threads} -o "$tmp_concat" {input.vcfs}
 
         # Strip PanSN prefixes from CHROM if present (sample#hap#contig#frag → contig).
         # Build a rename map from whatever CHROMs appear in the VCF.
-        rename_map=$(mktemp)
+        rename_map=$(mktemp -p "$_outdir")
         trap "rm -f $tmp_concat $tmp_renamed $rename_map" EXIT
         bcftools view -h "$tmp_concat" \
             | grep '^##contig=<ID=' \
@@ -1514,7 +1520,7 @@ rule vg_merge_samples:
         # breaks bcftools merge. norm -m -any splits multiallelics, -f
         # left-aligns against the conspec FASTA so all samples share REF/ALT
         # representations at each locus.
-        tmpdir=$(mktemp -d)
+        tmpdir=$(mktemp -d -p $(dirname {output.vcf}))
         trap "rm -rf $tmpdir" EXIT
 
         normed=()

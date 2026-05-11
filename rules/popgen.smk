@@ -60,8 +60,8 @@ rule fst_per_ref_pair:
         mkdir -p {FST_OUTDIR}/fst/{wildcards.ref}
         prefix={FST_OUTDIR}/fst/{wildcards.ref}/{wildcards.pop1}_vs_{wildcards.pop2}
 
-        pop1_tmp=$(mktemp)
-        pop2_tmp=$(mktemp)
+        pop1_tmp=$(mktemp -p {FST_OUTDIR}/fst/{wildcards.ref})
+        pop2_tmp=$(mktemp -p {FST_OUTDIR}/fst/{wildcards.ref})
         trap "rm -f $pop1_tmp $pop2_tmp" EXIT
 
         for s in {params.pop1_samples}; do echo "$s"; done > "$pop1_tmp"
@@ -251,7 +251,7 @@ rule angsd_roh_genotypes:
         r"""
         set -euo pipefail
         mkdir -p {ROH_OUTDIR}/{wildcards.ref}
-        bam_list=$(mktemp)
+        bam_list=$(mktemp -p {ROH_OUTDIR}/{wildcards.ref})
         trap "rm -f $bam_list" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
 
@@ -469,7 +469,7 @@ rule pcangsd:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {params.prefix})
-        tmpdir=$(mktemp -d)
+        tmpdir=$(mktemp -d -p $(dirname {params.prefix}))
         trap "rm -rf $tmpdir" EXIT
 
         # pcangsd >=1.x dropped --vcf / --n_eig and now consumes PLINK BED via

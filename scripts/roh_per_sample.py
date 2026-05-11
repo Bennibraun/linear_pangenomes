@@ -33,7 +33,7 @@ regions_arg = ""
 if canonical:
     regions_arg = "--regions " + ",".join(canonical)
 
-with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".roh") as tmp:
+with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".roh", dir=str(out_roh.parent)) as tmp:
     roh_tmp = tmp.name
 
 # Paper-style ROH: PL-based HMM (-G30) using population AF from ANGSD's
