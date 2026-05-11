@@ -1314,7 +1314,7 @@ rule vg_chunk_graph_bundle:
             -b "$tmpdir/chunk"
 
         shopt -s nullglob
-        produced=( "$tmpdir"/chunk-*.pg )
+        produced=( "$tmpdir"/chunk_*.vg )
         shopt -u nullglob
 
         if [ ${{#produced[@]}} -eq 0 ]; then
@@ -1367,7 +1367,7 @@ rule vg_chunk_gam_bundle:
             -b "$tmpdir/chunk"
 
         shopt -s nullglob
-        gam_files=( "$tmpdir"/chunk-*.gam )
+        gam_files=( "$tmpdir"/chunk_*.gam )
         shopt -u nullglob
 
         if [ ${{#gam_files[@]}} -eq 0 ]; then
