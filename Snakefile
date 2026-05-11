@@ -1313,8 +1313,14 @@ rule vg_chunk_graph_bundle:
             -P {input.paths} \
             -b "$tmpdir/chunk"
 
-        produced=( "$tmpdir"/chunk_*.pg )
-        if [ ${{#produced[@]}} -eq 1 ]; then
+        shopt -s nullglob
+        produced=( "$tmpdir"/chunk-*.pg )
+        shopt -u nullglob
+
+        if [ ${{#produced[@]}} -eq 0 ]; then
+            echo "ERROR: vg chunk produced no .pg files for bundle {wildcards.bundle}" >&2
+            exit 1
+        elif [ ${{#produced[@]}} -eq 1 ]; then
             mv "${{produced[0]}}" {output.graph}
         else
             vg combine "${{produced[@]}}" > {output.graph}
@@ -1360,9 +1366,15 @@ rule vg_chunk_gam_bundle:
             -a {input.gam} -g \
             -b "$tmpdir/chunk"
 
-        # GAM is a length-prefixed protobuf stream; cat-concatenation is a
-        # valid GAM stream of the union.
-        cat "$tmpdir"/chunk_*.gam > {output.gam}
+        shopt -s nullglob
+        gam_files=( "$tmpdir"/chunk-*.gam )
+        shopt -u nullglob
+
+        if [ ${{#gam_files[@]}} -eq 0 ]; then
+            echo "ERROR: vg chunk produced no .gam files for bundle {wildcards.bundle}" >&2
+            exit 1
+        fi
+        cat "${{gam_files[@]}}" > {output.gam}
         """
 
 
