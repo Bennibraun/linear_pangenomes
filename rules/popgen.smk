@@ -479,18 +479,23 @@ rule pcangsd:
         plink --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
               --out "$tmpdir/plink"
 
-        # Derive samples.txt and snp_coords.tsv from the PLINK files, NOT the
-        # VCF — pcangsd's row/column order matches the .fam/.bim, which can
-        # differ from the input VCF if plink reordered chromosomes.
         awk '{{print $2}}' "$tmpdir/plink.fam" > {output.samples}
-        awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > {output.snp_coords}
+        # Save all BIM coords; filter to pcangsd-kept sites after --sites_save.
+        awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > "$tmpdir/all_coords.tsv"
 
         pcangsd \
             -p "$tmpdir/plink" \
             -t {threads} \
             -e {params.n_pcs} \
             --selection \
+            --sites_save \
             -o {params.prefix}
+
+        # pcangsd --sites_save writes a boolean mask (0/1 per BIM site).
+        # Subset coords to only the sites pcangsd kept.
+        paste "$tmpdir/all_coords.tsv" {params.prefix}.sites \
+            | awk -F'\t' '$4 == 1 {{OFS="\t"; print $1, $2, $3}}' \
+            > {output.snp_coords}
         """
 
 
