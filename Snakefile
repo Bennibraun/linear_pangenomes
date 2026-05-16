@@ -1174,303 +1174,74 @@ rule bcftools_joint_call:
           -o {output.vcf}
         """
 
-# vg call chunks: contigs are bin-packed by length into bundles so the DAG
-# stays tractable (one job per contig × sample blew the SLURM driver's
-# RLIMIT_NPROC on the bee genome's ~177-contig fai). Each bundle's outputs
-# hold every reference path in that bundle in a single .pg / .gam / .vcf, and
-# vg call iterates them in one invocation.
-VG_CHUNK_DIR = CACTUS_OUTDIR / "chunks"
-VG_BUNDLE_TARGET_BP = 20_000_000  # ceiling per bundle; tune to trade off DAG size vs per-job runtime
-
-
-def _bin_pack_bundles(fai_path, target_bp):
-    """Single-pass greedy bin-pack. Walk contigs in descending length,
-    accumulating into the current bundle until its total exceeds target_bp,
-    then start a new one. Contigs longer than target_bp end up alone (each
-    closes its bundle on the first append)."""
-    fai = Path(fai_path)
-    if not fai.exists():
-        return {}
-    pairs = []
-    for line in fai.read_text().splitlines():
-        if not line.strip():
-            continue
-        cols = line.split("\t")
-        pairs.append((cols[0], int(cols[1])))
-    pairs.sort(key=lambda x: -x[1])
-    bundles, current, current_bp, idx = {}, [], 0, 0
-    for contig, length in pairs:
-        current.append(contig)
-        current_bp += length
-        if current_bp >= target_bp:
-            bundles[f"bundle{idx:03d}"] = current
-            idx += 1
-            current, current_bp = [], 0
-    if current:
-        bundles[f"bundle{idx:03d}"] = current
-    return bundles
-
-
-VG_BUNDLES = _bin_pack_bundles(_conspec_fai, VG_BUNDLE_TARGET_BP)
-VG_BUNDLE_NAMES = list(VG_BUNDLES.keys())
-
-
-rule vg_bundle_paths:
-    """Resolve PanSN reference paths in the GBZ for the contigs assigned to
-    one bundle. One vg-paths scan per bundle; downstream chunk rules read
-    the cached file via -P instead of re-resolving."""
+rule vg_snarls:
+    """Decompose the GBZ into snarls once, shared across all samples. vg call
+    recomputes this internally if not provided, which is expensive and identical
+    for every sample. Computing it once here saves that cost per sample."""
     input:
         gbz=VG_GBZ
     output:
-        paths=VG_CHUNK_DIR / "paths_{bundle}.txt"
-    conda:
-        "envs/vg_call.yaml"
-    threads: 1
-    resources:
-        slurm_partition="short",
-        runtime=30,
-        mem_mb=4000,
-        cpus=1
-    params:
-        contigs=lambda wc: " ".join(VG_BUNDLES[wc.bundle])
-    wildcard_constraints:
-        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.paths})
-        all=$(mktemp -p $(dirname {output.paths}))
-        trap "rm -f $all" EXIT
-        vg paths -x {input.gbz} -L > "$all"
-        : > {output.paths}
-        for c in {params.contigs}; do
-            # Collect subpaths (with bracket offsets) and the base path separately.
-            # If subpaths exist, use only those — the base path name is not a
-            # concrete path in the GBZ and vg chunk rejects it without coordinates.
-            sub=$(awk -v c="$c" 'BEGIN{{FS="#"}} NF>=3 && $3~"^"c"\\[" {{print}}' "$all")
-            if [ -n "$sub" ]; then
-                echo "$sub" >> {output.paths}
-            else
-                awk -v c="$c" 'BEGIN{{FS="#"}} (NF>=3 && $3==c) || $0==c' "$all" | head -n1 >> {output.paths}
-            fi
-        done
-        if [ ! -s {output.paths} ]; then
-            echo "ERROR: no GBZ paths matched bundle {wildcards.bundle}" >&2
-            exit 1
-        fi
-        """
-
-
-rule vg_gamsort:
-    """Sort + index the per-sample GAM. vg chunk -a needs an indexed GAM
-    so it can pull reads aligned to specific reference paths; without the
-    .gai it bails with 'could not open file'. Marked temp() because each
-    sorted GAM is only consumed by the per-bundle chunk rules."""
-    input:
-        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
-    output:
-        gam=temp(ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam"),
-        gai=temp(ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam.gai")
-    conda:
-        "envs/vg_call.yaml"
-    threads: 4
-    resources:
-        slurm_partition="short",
-        runtime=240,
-        mem_mb=32000,
-        cpus=4
-    shell:
-        r"""
-        set -euo pipefail
-        export OPENBLAS_NUM_THREADS={threads}
-        export OMP_NUM_THREADS={threads}
-        vg gamsort -t {threads} -i {output.gai} {input.gam} > {output.gam}
-        """
-
-
-rule vg_chunk_graph_bundle:
-    """Extract one PackedGraph subgraph per bundle. The .pg holds every
-    reference path assigned to the bundle plus 2000 nodes of context (enough
-    to capture attached snarls), combined into one graph via vg combine."""
-    input:
-        gbz=VG_GBZ,
-        paths=VG_CHUNK_DIR / "paths_{bundle}.txt"
-    output:
-        graph=VG_CHUNK_DIR / "vgchunk_{bundle}.pg"
-    conda:
-        "envs/vg_call.yaml"
-    threads: 4
-    resources:
-        slurm_partition="long",
-        runtime=480,
-        mem_mb=32000,
-        cpus=4
-    params:
-        outdir=VG_CHUNK_DIR
-    wildcard_constraints:
-        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {params.outdir}
-        export OPENBLAS_NUM_THREADS={threads}
-        export OMP_NUM_THREADS={threads}
-
-        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.bundle}_XXXX)
-        trap "rm -rf $tmpdir" EXIT
-
-        # -c 2000: 2000 nodes of context around each path. vg chunk requires
-        # context (or -S snarls) when chunking on paths; this size pulls in
-        # the attached variant bubbles without bloating the graph.
-        vg chunk -x {input.gbz} -O pg -t {threads} -c 2000 \
-            -P {input.paths} \
-            -b "$tmpdir/chunk"
-
-        shopt -s nullglob
-        produced=( "$tmpdir"/chunk_*.vg )
-        shopt -u nullglob
-
-        if [ ${{#produced[@]}} -eq 0 ]; then
-            echo "ERROR: vg chunk produced no .pg files for bundle {wildcards.bundle}" >&2
-            exit 1
-        elif [ ${{#produced[@]}} -eq 1 ]; then
-            mv "${{produced[0]}}" {output.graph}
-        else
-            vg combine "${{produced[@]}}" > {output.graph}
-        fi
-        """
-
-
-rule vg_chunk_gam_bundle:
-    """Per-sample GAM chunk for one bundle. Reuses the bundle paths file
-    so GAM and graph cover identical reference regions. Consumes the
-    sorted+indexed GAM from vg_gamsort."""
-    input:
-        gbz=VG_GBZ,
-        paths=VG_CHUNK_DIR / "paths_{bundle}.txt",
-        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam",
-        gai=ALIGN_OUTDIR / "{sample}/{sample}.cactus.sorted.gam.gai"
-    output:
-        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{bundle}.gam"
-    conda:
-        "envs/vg_call.yaml"
-    threads: 2
-    resources:
-        slurm_partition="short",
-        runtime=240,
-        mem_mb=16000,
-        cpus=2
-    params:
-        outdir=lambda wc: ALIGN_OUTDIR / wc.sample / "vg_chunks"
-    wildcard_constraints:
-        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {params.outdir}
-        export OPENBLAS_NUM_THREADS={threads}
-        export OMP_NUM_THREADS={threads}
-
-        tmpdir=$(mktemp -d -p {params.outdir} chunk_{wildcards.bundle}_XXXX)
-        trap "rm -rf $tmpdir" EXIT
-
-        vg chunk -x {input.gbz} -t {threads} -c 2000 \
-            -P {input.paths} \
-            -a {input.gam} -g \
-            -b "$tmpdir/chunk"
-
-        shopt -s nullglob
-        gam_files=( "$tmpdir"/chunk_*.gam )
-        shopt -u nullglob
-
-        if [ ${{#gam_files[@]}} -eq 0 ]; then
-            echo "ERROR: vg chunk produced no .gam files for bundle {wildcards.bundle}" >&2
-            exit 1
-        fi
-        cat "${{gam_files[@]}}" > {output.gam}
-        """
-
-
-rule vg_call_chunk:
-    """Pack + call on a single (sample, bundle). The bundle .pg contains
-    every reference path; vg call iterates them in one invocation."""
-    input:
-        graph=VG_CHUNK_DIR / "vgchunk_{bundle}.pg",
-        gam=ALIGN_OUTDIR / "{sample}/vg_chunks/{sample}_{bundle}.gam"
-    output:
-        vcf=VC_OUTDIR / "vg/chunks/{sample}/{bundle}.vcf.gz",
-        tbi=VC_OUTDIR / "vg/chunks/{sample}/{bundle}.vcf.gz.tbi"
+        snarls=VC_OUTDIR / "vg/graph.snarls"
     conda:
         "envs/vg_call.yaml"
     threads: VG_THREADS
     resources:
-        slurm_partition="short",
-        runtime=240,
-        mem_mb=16000,
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=64000,
         cpus=VG_THREADS
-    wildcard_constraints:
-        bundle="|".join(VG_BUNDLE_NAMES) if VG_BUNDLE_NAMES else "x^"
     shell:
         r"""
         set -euo pipefail
-        export OPENBLAS_NUM_THREADS={threads}
-        export OMP_NUM_THREADS={threads}
-        mkdir -p $(dirname {output.vcf})
-        pack_tmp=$(mktemp -p $(dirname {output.vcf}) --suffix=.pack)
-        trap "rm -f $pack_tmp" EXIT
-
-        # vg call must run on the SAME graph object passed to vg pack — that's
-        # why we pass the .pg bundle to both, not the GBZ.
-        vg pack -t {threads} -e -Q 5 \
-            -x {input.graph} -g {input.gam} -o "$pack_tmp"
-        vg call -t {threads} -k "$pack_tmp" -s {wildcards.sample} \
-            {input.graph} \
-          | bgzip -c > {output.vcf}
-        tabix -p vcf {output.vcf}
+        mkdir -p $(dirname {output.snarls})
+        vg snarls -t {threads} {input.gbz} > {output.snarls}
         """
 
 
 rule vg_call:
-    """Concatenate per-bundle vg call VCFs into the final per-sample VCF.
-    Bundles are bin-packed by size, not genome order, so we sort after
-    concat to restore canonical chromosome ordering for downstream rules.
-    Also strips any residual PanSN prefixes (sample#hap#contig#frag →
-    contig) so CHROM matches the conspec FASTA for downstream bcftools."""
+    """Pack + call variants for one sample against the full GBZ. Runs on the
+    whole graph in a single job — no chunking. Runtime is dominated by vg pack
+    (linear in GAM size) and vg call (linear in graph nodes × snarls). Expect
+    roughly 1-2 days for a ~500 MB GAM on a bee-scale genome; scale linearly
+    with GAM size. Strips PanSN prefixes from CHROM so output matches conspec."""
     input:
-        vcfs=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz" for b in VG_BUNDLE_NAMES],
-        tbis=lambda wc: [VC_OUTDIR / "vg/chunks" / wc.sample / f"{b}.vcf.gz.tbi" for b in VG_BUNDLE_NAMES],
-        fai=f"{ALIGN_CONSPEC}.fai",
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
+        gbz=VG_GBZ,
+        snarls=VC_OUTDIR / "vg/graph.snarls"
     output:
         vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
     conda:
         "envs/vg_call.yaml"
-    threads: 2
+    threads: VG_THREADS
     resources:
-        slurm_partition="short",
-        runtime=60,
-        mem_mb=4000,
-        cpus=2
+        slurm_partition="long",
+        runtime=7200,
+        mem_mb=64000,
+        cpus=VG_THREADS
     shell:
         r"""
         set -euo pipefail
+        export OPENBLAS_NUM_THREADS={threads}
+        export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.vcf})
         _outdir=$(dirname {output.vcf})
-        tmp_concat=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
-        tmp_renamed=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
-        trap "rm -f $tmp_concat $tmp_renamed" EXIT
+        pack_tmp=$(mktemp -p "$_outdir" --suffix=.pack)
+        tmp_vcf=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
+        trap "rm -f $pack_tmp $tmp_vcf" EXIT
 
-        bcftools concat -a -Oz --threads {threads} -o "$tmp_concat" {input.vcfs}
+        vg pack -t {threads} -Q 20 -x {input.gbz} -g {input.gam} -o "$pack_tmp"
+        vg call -t {threads} -k "$pack_tmp" -r {input.snarls} -s {wildcards.sample} {input.gbz} \
+          | bgzip -c > "$tmp_vcf"
 
-        # Strip PanSN prefixes from CHROM if present (sample#hap#contig#frag → contig).
-        # Build a rename map from whatever CHROMs appear in the VCF.
+        # Strip PanSN prefixes from CHROM (sample#hap#contig → contig) so
+        # output coordinates match the conspec FASTA used by downstream rules.
         rename_map=$(mktemp -p "$_outdir")
-        trap "rm -f $tmp_concat $tmp_renamed $rename_map" EXIT
-        bcftools view -h "$tmp_concat" \
+        trap "rm -f $pack_tmp $tmp_vcf $rename_map" EXIT
+        bcftools view -h "$tmp_vcf" \
             | grep '^##contig=<ID=' \
             | sed 's/##contig=<ID=//;s/,.*//' \
             | while read -r chrom; do
-                # 4-field PanSN: take field 3;  3-field: take field 3;  plain: keep as-is
                 n=$(echo "$chrom" | awk -F'#' '{{print NF}}')
                 if [ "$n" -ge 3 ]; then
                     plain=$(echo "$chrom" | cut -d'#' -f3)
@@ -1479,10 +1250,12 @@ rule vg_call:
             done > "$rename_map"
 
         if [ -s "$rename_map" ]; then
-            bcftools annotate --rename-chrs "$rename_map" -Oz -o "$tmp_renamed" "$tmp_concat"
+            tmp_renamed=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
+            trap "rm -f $pack_tmp $tmp_vcf $rename_map $tmp_renamed" EXIT
+            bcftools annotate --rename-chrs "$rename_map" -Oz -o "$tmp_renamed" "$tmp_vcf"
             bcftools sort -Oz -o {output.vcf} "$tmp_renamed"
         else
-            bcftools sort -Oz -o {output.vcf} "$tmp_concat"
+            bcftools sort -Oz -o {output.vcf} "$tmp_vcf"
         fi
         tabix -p vcf {output.vcf}
         """
