@@ -477,10 +477,11 @@ rule pcangsd:
         # --const-fid 0: VCF has no family info; assign FID=0 to every sample.
         # --allow-extra-chr: tolerate non-numeric contig names (NC_*, NW_*).
         plink --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+              --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
         awk '{{print $2}}' "$tmpdir/plink.fam" > {output.samples}
-        # Save all BIM coords; filter to pcangsd-kept sites after --sites_save.
+        # Save all BIM coords; filter to pcangsd-kept sites after --sites-save.
         awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > "$tmpdir/all_coords.tsv"
 
         pcangsd \
@@ -488,10 +489,10 @@ rule pcangsd:
             -t {threads} \
             -e {params.n_pcs} \
             --selection \
-            --sites_save \
+            --sites-save \
             -o {params.prefix}
 
-        # pcangsd --sites_save writes a boolean mask (0/1 per BIM site).
+        # pcangsd --sites-save writes a boolean mask (0/1 per BIM site).
         # Subset coords to only the sites pcangsd kept.
         paste "$tmpdir/all_coords.tsv" {params.prefix}.sites \
             | awk -F'\t' '$4 == 1 {{OFS="\t"; print $1, $2, $3}}' \
