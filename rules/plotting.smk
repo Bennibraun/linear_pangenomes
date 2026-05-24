@@ -164,6 +164,28 @@ rule plot_roh:
         "../scripts/plot_roh.py"
 
 
+rule plot_coverage_qc:
+    """Per-sample mean depth across all linear refs, with a min-depth threshold
+    line. Samples below threshold are highlighted so degraded libraries
+    surface in QC at a glance."""
+    input:
+        metrics=METRICS_OUTDIR / "alignment_metrics.tsv",
+    output:
+        pdf=PLOT_OUTDIR / "qc/coverage_qc.pdf",
+        png=PLOT_OUTDIR / "qc/coverage_qc.png",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        min_depth=QC_MIN_DEPTH,
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_coverage_qc.py"
+
+
 rule plot_alignment_rates:
     input:
         metrics=METRICS_OUTDIR / "alignment_metrics.tsv",

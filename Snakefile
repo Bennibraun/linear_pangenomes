@@ -55,13 +55,12 @@ ALIGN_AUGREF = REFS_NESTED["augref"]["fasta"]
 ALIGN_CONSPEC = REFS_NESTED["conspec"]["fasta"]
 ALIGN_HETSPEC = REFS_NESTED["hetspec"]["fasta"]
 
-# mc_graph is the Minigraph-Cactus pangenome reference. Variants come from
-# vg call on the graph (chunked + per-sample-merged in vg_merge_samples),
-# written to the same bcftools/{ref}/combined/merged.vcf.gz path as the
-# linear refs so {ref}-wildcarded popgen rules (FST, AFS, π, allelic
-# balance, ROH, PCAngsd) pick it up automatically. It shares the conspec
-# FASTA only for indexing (the graph variants live in conspec coordinates
-# because vg call linearizes against the reference path).
+# mc_graph is the Minigraph-Cactus pangenome reference. SNPs come from
+# bcftools on surjected BAMs (conspec coordinates), written to the same
+# bcftools/{ref}/combined/merged.vcf.gz path as the linear refs so
+# {ref}-wildcarded popgen rules (FST, AFS, π, allelic balance, ROH,
+# PCAngsd) pick it up automatically. SVs are called separately via vg call
+# on the cohort-augmented graph and stored under sv/vg/ for benchmarking.
 REFS_NESTED["mc_graph"] = dict(REFS_NESTED["conspec"])
 REFERENCE_NAMES = REFERENCE_NAMES + ["mc_graph"]
 
@@ -124,6 +123,7 @@ VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
 BCFTOOLS_THREADS = BCFTOOLS_CFG.get("threads", 4)
 VG_GBZ = VG_CFG.get("graph_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 VG_THREADS = VG_CFG.get("threads", 4)
+VG_AUGMENT_MIN_COV = VG_CFG.get("augment_min_cov", 3)
 
 FST_CFG = config["fst_afs"]
 FST_OUTDIR = Path(FST_CFG.get("outdir", "results/fst_afs"))
@@ -144,12 +144,43 @@ PI_WINDOW_STEP = PI_CFG.get("window_step", 5000)
 AB_CFG = config["allelic_balance"]
 AB_OUTDIR = Path(AB_CFG.get("outdir", "results/allelic_balance"))
 AB_BINS = AB_CFG.get("bins", [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+AB_MIN_DEPTH = AB_CFG.get("min_depth", 10)
 
 ROH_CFG = config["roh"]
 ROH_OUTDIR = Path(ROH_CFG.get("outdir", "results/roh"))
 ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
 ROH_MIN_LENGTH = ROH_CFG.get("min_roh_length", 100000)
 ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
+
+RELATEDNESS_CFG = config.get("relatedness", {})
+RELATEDNESS_OUTDIR = Path(RELATEDNESS_CFG.get("outdir", "results/relatedness"))
+
+HET_CFG = config.get("heterozygosity", {})
+HET_OUTDIR = Path(HET_CFG.get("outdir", "results/heterozygosity"))
+
+QC_CFG = config.get("sample_qc", {})
+QC_OUTDIR = Path(QC_CFG.get("outdir", "results/sample_qc"))
+QC_MIN_DEPTH = QC_CFG.get("min_depth", 5.0)
+QC_MIN_MAPPING_RATE = QC_CFG.get("min_mapping_rate", 0.8)
+QC_MIN_HET_RATE = QC_CFG.get("min_het_rate", 0.0001)
+QC_MAX_HET_RATE = QC_CFG.get("max_het_rate", 0.05)
+QC_MAX_MISSING_RATE = QC_CFG.get("max_missing_rate", 0.2)
+
+# Reference pairs for F1 concordance. Only refs that share the conspec
+# coordinate system can be intersected directly (hetspec is on its own
+# coordinates so it's excluded). Override via config['f1_concordance'][
+# 'compatible_refs'] for non-default reference setups.
+_F1_CFG = config.get("f1_concordance", {})
+_F1_COMPATIBLE = _F1_CFG.get(
+    "compatible_refs",
+    [r for r in REFERENCE_NAMES if r in ("conspec", "augref", "mc_graph")],
+)
+F1_OUTDIR = Path(_F1_CFG.get("outdir", "results/f1_concordance"))
+F1_PAIRS = [
+    (a, b)
+    for i, a in enumerate(_F1_COMPATIBLE)
+    for b in _F1_COMPATIBLE[i + 1 :]
+]
 
 # Derive canonical chromosome names from the conspec .fai so we never need
 # to maintain a manual list. These are the chromosomes present in all three
@@ -210,10 +241,15 @@ wildcard_constraints:
     sample="|".join(_ALL_SAMPLES) if _ALL_SAMPLES else "x^",
     contig="[A-Za-z0-9._-]+"
 
-# References that have a real BAM (everything except mc_graph, which now
-# routes through vg call instead of a surjected BAM). Used by metrics and
-# bcftools rules that must not match mc_graph.
-_BCFTOOLS_REFS = [r for r in REFERENCE_NAMES if r != "mc_graph"]
+# All references now have a real BAM — mc_graph uses a surjected BAM from
+# the giraffe GAM so its SNPs go through bcftools like every other ref.
+_BCFTOOLS_REFS = REFERENCE_NAMES
+
+# Linear references only (everything except mc_graph). Used by rules whose
+# inputs/behaviour assume a true bwa-mem BAM (e.g. ANGSD genotype likelihoods,
+# samtools flagstat-based mapping metrics — surjection loss biases these for
+# mc_graph so it gets its own GAM-derived or VCF-derived path instead).
+_LINEAR_REFS = [r for r in REFERENCE_NAMES if r != "mc_graph"]
 
 rule all:
     input:
@@ -244,7 +280,9 @@ rule all:
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
-        # Alignment metrics — mc_graph uses GAM-derived stats, not a BAM
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam", sample=SHORT_SAMPLES),
+        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai", sample=SHORT_SAMPLES),
+        # Alignment metrics
         expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=_BCFTOOLS_REFS),
         expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
         expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES),
@@ -253,13 +291,14 @@ rule all:
         expand(METRICS_OUTDIR / "short_to_assembly/{short_sample}__{long_sample}.metrics.tsv",
                short_sample=SHORT_SAMPLES, long_sample=LONG_SAMPLES),
         METRICS_OUTDIR / "short_to_assembly_metrics.tsv",
-        # Variant calling
+        # SNP calling (bcftools on BAMs for all refs including mc_graph)
         expand(VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz", ref=REFERENCE_NAMES),
         expand(VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
+        # SV calling (vg call on augmented graph, for benchmarking)
+        expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
+        expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
         # Population genetics
         expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=REFERENCE_NAMES),
         [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
@@ -287,7 +326,18 @@ rule all:
         expand(PLOT_OUTDIR / "allelic_balance/{ref}_allelic_balance.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES),
         PLOT_OUTDIR / "alignment/alignment_rates.png",
-        PLOT_OUTDIR / "alignment/assembly_alignment.png"
+        PLOT_OUTDIR / "alignment/assembly_alignment.png",
+        PLOT_OUTDIR / "qc/coverage_qc.png",
+        # Per-sample heterozygosity
+        expand(HET_OUTDIR / "{ref}/per_sample_heterozygosity.tsv", ref=REFERENCE_NAMES),
+        # Relatedness (per-ref + cohort summary)
+        expand(RELATEDNESS_OUTDIR / "{ref}/relatedness.tsv", ref=REFERENCE_NAMES),
+        RELATEDNESS_OUTDIR / "relatedness_summary.tsv",
+        # Cohort QC and summary tables
+        QC_OUTDIR / "sample_qc.tsv",
+        QC_OUTDIR / "per_ref_summary.tsv",
+        # F1 concordance between SNP call sets across refs
+        F1_OUTDIR / "f1_summary.tsv"
 
 rule nanostat:
     input:
@@ -806,6 +856,124 @@ rule giraffe_align:
           --rescue-attempts 0 --sample {wildcards.sample} > {output.gam}
         """
 
+rule vg_surject:
+    """Project the giraffe GAM onto the conspec reference paths to produce a
+    coordinate-sorted BAM in conspec coordinates. Used for bcftools SNP calling
+    on mc_graph so SNP calls are on the same coordinates as the linear refs.
+
+    -F: restrict surjection to PanSN paths whose final component matches a
+        conspec contig (so surjection targets the linear reference paths only,
+        not assembly haplotypes or other paths in the GBZ).
+    --prune-low-cplx: drop low-complexity alignments that inflate false SNPs.
+
+    After surjection, CHROM names are still PanSN-prefixed (e.g.
+    "reference#0#NC_001234.1"). samtools reheader strips the prefix so the BAM
+    matches the conspec FASTA used by bcftools mpileup downstream.
+
+    NOTE: A small fraction of reads in the GAM align to non-reference graph
+    paths only (e.g. SV alt paths absent from conspec). vg surject drops those;
+    they appear in the SV pipeline but not in the SNP pipeline. This is the
+    surjection loss the user warned about — it's expected and unavoidable for
+    SNP calling on linear coordinates."""
+    input:
+        gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
+        gbz=VG_GBZ,
+        conspec_fai=f"{ALIGN_CONSPEC}.fai",
+    output:
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai",
+    conda:
+        "envs/vg_call.yaml"
+    threads: ALIGN_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=32000,
+        cpus=ALIGN_THREADS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.bam})
+        _workdir=$(dirname {output.bam})
+
+        # Resolve PanSN path names in the GBZ that correspond to conspec
+        # contigs. The .fai gives us bare contig names; vg paths -L gives us
+        # whatever's in the GBZ. Match the last "#"-delimited field, or fall
+        # back to exact-match for non-PanSN graphs.
+        contigs_tmp=$(mktemp -p "$_workdir")
+        paths_tmp=$(mktemp -p "$_workdir")
+        path_list=$(mktemp -p "$_workdir")
+        rename_map=$(mktemp -p "$_workdir")
+        trap "rm -f $contigs_tmp $paths_tmp $path_list $rename_map" EXIT
+
+        awk -F'\t' '{{print $1}}' {input.conspec_fai} > "$contigs_tmp"
+        vg paths -x {input.gbz} -L > "$paths_tmp"
+
+        awk -v contigs="$contigs_tmp" '
+            BEGIN {{
+                while ((getline c < contigs) > 0) want[c] = 1
+            }}
+            {{
+                n = split($0, parts, "#")
+                last = (n >= 3) ? parts[n] : $0
+                if (last in want) print $0
+            }}
+        ' "$paths_tmp" > "$path_list"
+
+        if [ ! -s "$path_list" ]; then
+            echo "ERROR: no GBZ paths matched any conspec contig" >&2
+            exit 1
+        fi
+
+        # Build a CHROM rename map (PanSN path → bare contig name) for
+        # samtools reheader. Same matching logic as path_list.
+        awk 'BEGIN{{FS="#"}} {{
+            if (NF >= 3) print $0 "\t" $NF
+            else print $0 "\t" $0
+        }}' "$path_list" > "$rename_map"
+
+        vg surject -x {input.gbz} -G {input.gam} \
+            -b -i --prune-low-cplx \
+            -F "$path_list" \
+            -t {threads} \
+          | samtools sort -@ {threads} -O bam -o "$_workdir/{wildcards.sample}.surject.tmp.bam"
+
+        # Strip PanSN prefixes from @SQ headers so CHROM matches conspec.
+        # samtools reheader only rewrites the header, so we edit @SQ SN: in
+        # place using the rename map.
+        samtools view -H "$_workdir/{wildcards.sample}.surject.tmp.bam" \
+          | awk -v map="$rename_map" '
+                BEGIN {{
+                    while ((getline line < map) > 0) {{
+                        split(line, a, "\t")
+                        rn[a[1]] = a[2]
+                    }}
+                }}
+                /^@SQ/ {{
+                    n = split($0, fields, "\t")
+                    for (i = 1; i <= n; i++) {{
+                        if (fields[i] ~ /^SN:/) {{
+                            old = substr(fields[i], 4)
+                            if (old in rn) fields[i] = "SN:" rn[old]
+                        }}
+                    }}
+                    line = fields[1]
+                    for (i = 2; i <= n; i++) line = line "\t" fields[i]
+                    print line
+                    next
+                }}
+                {{ print }}
+            ' > "$_workdir/{wildcards.sample}.reheader.sam"
+
+        samtools reheader "$_workdir/{wildcards.sample}.reheader.sam" \
+            "$_workdir/{wildcards.sample}.surject.tmp.bam" > {output.bam}
+        samtools index -@ {threads} {output.bam}
+
+        rm -f "$_workdir/{wildcards.sample}.surject.tmp.bam" \
+              "$_workdir/{wildcards.sample}.reheader.sam"
+        """
+
+
 rule count_short_reads:
     """Derive the canonical per-sample read count from the conspec BAM.
     bwa-mem writes every input read to the BAM (mapped or not), so
@@ -853,9 +1021,10 @@ rule align_metrics_per_bam:
         min_mapq=METRICS_MIN_MAPQ,
         min_baseq=METRICS_MIN_BASEQ
     wildcard_constraints:
-        # mc_graph has no BAM (vg call works directly on the GAM). Its metrics
-        # are emitted by align_metrics_per_gam from vg stats instead.
-        ref="|".join(_BCFTOOLS_REFS) if _BCFTOOLS_REFS else "x^"
+        # mc_graph BAM metrics come from align_metrics_per_gam (vg stats on
+        # the GAM) rather than samtools flagstat — surjection loss would make
+        # mapping rate look artificially low.
+        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
     shell:
         r"""
         set -euo pipefail
@@ -882,10 +1051,9 @@ EOF
 
 rule align_metrics_per_gam:
     """Emit GAM-derived metrics under both 'cactus' (raw giraffe) and
-    'mc_graph' (the canonical graph-reference label used downstream). With
-    surject removed, mc_graph mapping rate is the true graph mapping rate
-    from giraffe, computed straight from vg stats — no surject loss to
-    account for."""
+    'mc_graph' (the canonical graph-reference label used downstream).
+    Uses vg stats on the GAM directly — surjected BAM metrics are not used
+    here since surjection loss would make mc_graph look artificially worse."""
     input:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
     output:
@@ -1125,13 +1293,28 @@ def _bams_for_ref(wildcards):
 def _bais_for_ref(wildcards):
     return [str(ALIGN_OUTDIR / sample / f"{sample}.{wildcards.ref}.bam.bai") for sample in SHORT_SAMPLES]
 
+def _ref_fasta_for_bcftools(wildcards):
+    """Return the FASTA for bcftools mpileup. mc_graph surjects onto conspec,
+    so it shares the conspec FASTA for pileup."""
+    if wildcards.ref == "mc_graph":
+        return ALIGN_CONSPEC
+    return _ref_fasta(wildcards)
+
+def _ref_fai_for_bcftools(wildcards):
+    if wildcards.ref == "mc_graph":
+        return f"{ALIGN_CONSPEC}.fai"
+    return _ref_fai(wildcards)
+
 
 rule bcftools_joint_call:
+    """Joint SNP calling across all samples for one reference. mc_graph uses
+    surjected BAMs (conspec coordinates) so it runs through the same pipeline
+    as the linear refs and produces directly comparable SNP calls."""
     input:
         bams=_bams_for_ref,
         bais=_bais_for_ref,
-        fasta=lambda wildcards: _ref_fasta(wildcards),
-        fai=lambda wildcards: _ref_fai(wildcards),
+        fasta=lambda wildcards: _ref_fasta_for_bcftools(wildcards),
+        fai=lambda wildcards: _ref_fai_for_bcftools(wildcards),
     output:
         vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
         tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
@@ -1139,12 +1322,6 @@ rule bcftools_joint_call:
         "envs/bcftools.yaml"
     threads:
         BCFTOOLS_THREADS
-    wildcard_constraints:
-        # mc_graph 'reference' draws its variants from vg_merge_samples (graph-
-        # native vg call output), not from a surjected BAM, so this rule must
-        # not match it. Without this constraint Snakemake sees two rules
-        # producing the same output path.
-        ref="|".join(_BCFTOOLS_REFS) if _BCFTOOLS_REFS else "x^"
     resources:
         slurm_partition="long",
         runtime=2880,
@@ -1174,14 +1351,78 @@ rule bcftools_joint_call:
           -o {output.vcf}
         """
 
-rule vg_snarls:
-    """Decompose the GBZ into snarls once, shared across all samples. vg call
-    recomputes this internally if not provided, which is expensive and identical
-    for every sample. Computing it once here saves that cost per sample."""
+# ============================================================================
+# Graph SV calling (mc_graph only, for benchmarking/comparison)
+# Follows Jeon et al. 2026: augment graph with all samples' reads combined,
+# then call per-sample with -c 50 -C 100000 (SVs only, 50 bp – 100 kb).
+# Output goes to a separate sv/vg/ path — not consumed by the popgen stack.
+# ============================================================================
+
+rule vg_sv_combine_gams:
+    """Concatenate all samples' GAMs into one file for cohort augmentation.
+    vg augment is run on the combined GAM so the augmented graph embeds
+    variation from the full cohort, not just one sample."""
     input:
-        gbz=VG_GBZ
+        gams=expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
     output:
-        snarls=VC_OUTDIR / "vg/graph.snarls"
+        combined_gam=VC_OUTDIR / "sv/vg/combined.gam",
+    conda:
+        "envs/vg_call.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.combined_gam})
+        cat {input.gams} > {output.combined_gam}
+        """
+
+
+rule vg_sv_augment:
+    """Augment the GBZ with cohort-wide short-read variation. -s embeds reads
+    as paths; -m 3 requires at least 3 reads of support to add a variant.
+    Output is a packed-graph (.pg) shared by all per-sample SV calling jobs."""
+    input:
+        gbz=VG_GBZ,
+        combined_gam=VC_OUTDIR / "sv/vg/combined.gam",
+    output:
+        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
+        aug_gam=VC_OUTDIR / "sv/vg/augmented.gam",
+    conda:
+        "envs/vg_call.yaml"
+    threads: VG_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=2880,
+        mem_mb=64000,
+        cpus=VG_THREADS
+    params:
+        min_cov=VG_AUGMENT_MIN_COV,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.aug_pg})
+        # vg convert -p: GBZ → packed graph (vg augment requires .pg input)
+        tmp_pg=$(mktemp --suffix=.pg)
+        trap "rm -f $tmp_pg" EXIT
+        vg convert -p {input.gbz} > "$tmp_pg"
+
+        vg augment -t {threads} "$tmp_pg" {input.combined_gam} \
+            -s -m {params.min_cov} -q 5 -Q 5 \
+            -A {output.aug_gam} \
+            > {output.aug_pg}
+        """
+
+
+rule vg_sv_snarls:
+    """Compute snarls on the augmented graph once, shared across all samples."""
+    input:
+        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
+    output:
+        snarls=VC_OUTDIR / "sv/vg/augmented.snarls",
     conda:
         "envs/vg_call.yaml"
     threads: VG_THREADS
@@ -1193,51 +1434,78 @@ rule vg_snarls:
     shell:
         r"""
         set -euo pipefail
-        mkdir -p $(dirname {output.snarls})
-        vg snarls -t {threads} {input.gbz} > {output.snarls}
+        vg snarls -t {threads} {input.aug_pg} > {output.snarls}
         """
 
 
-rule vg_call:
-    """Pack + call variants for one sample against the full GBZ. Runs on the
-    whole graph in a single job — no chunking. Runtime is dominated by vg pack
-    (linear in GAM size) and vg call (linear in graph nodes × snarls). Expect
-    roughly 1-2 days for a ~500 MB GAM on a bee-scale genome; scale linearly
-    with GAM size. Strips PanSN prefixes from CHROM so output matches conspec."""
+rule vg_sv_pack:
+    """Compute per-sample read support against the augmented graph."""
     input:
+        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
-        gbz=VG_GBZ,
-        snarls=VC_OUTDIR / "vg/graph.snarls"
     output:
-        vcf=VC_OUTDIR / "vg/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "vg/{sample}.vcf.gz.tbi"
+        pack=VC_OUTDIR / "sv/vg/{sample}.pack",
     conda:
         "envs/vg_call.yaml"
     threads: VG_THREADS
     resources:
         slurm_partition="long",
-        runtime=7200,
+        runtime=720,
+        mem_mb=32000,
+        cpus=VG_THREADS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.pack})
+        vg pack -t {threads} -Q 5 -x {input.aug_pg} -g {input.gam} -o {output.pack}
+        """
+
+
+rule vg_sv_call:
+    """Call SVs per sample from the cohort-augmented graph.
+    -c 50 / -C 100000: only snarls with traversals between 50 bp and 100 kb
+    (SVs only; skips SNP-scale snarls and the pathologically large snarls
+    that cause multi-day runtimes).
+    -A: call all snarls including nested (Jeon et al. 2026). We don't pass -a
+    (which would emit 0/0 reference calls at every snarl); for the variant
+    counts and SV-based popgen we only need variant sites.
+    Strips PanSN prefixes from CHROM."""
+    input:
+        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
+        snarls=VC_OUTDIR / "sv/vg/augmented.snarls",
+        pack=VC_OUTDIR / "sv/vg/{sample}.pack",
+    output:
+        vcf=VC_OUTDIR / "sv/vg/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi",
+    conda:
+        "envs/vg_call.yaml"
+    threads: VG_THREADS
+    resources:
+        slurm_partition="long",
+        runtime=2880,
         mem_mb=64000,
         cpus=VG_THREADS
     shell:
         r"""
         set -euo pipefail
-        export OPENBLAS_NUM_THREADS={threads}
-        export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.vcf})
         _outdir=$(dirname {output.vcf})
-        pack_tmp=$(mktemp -p "$_outdir" --suffix=.pack)
-        tmp_vcf=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
-        trap "rm -f $pack_tmp $tmp_vcf" EXIT
 
-        vg pack -t {threads} -Q 20 -x {input.gbz} -g {input.gam} -o "$pack_tmp"
-        vg call -t {threads} -k "$pack_tmp" -r {input.snarls} -s {wildcards.sample} {input.gbz} \
+        tmp_vcf=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
+        trap "rm -f $tmp_vcf" EXIT
+
+        vg call -t {threads} \
+            -k {input.pack} \
+            -r {input.snarls} \
+            -s {wildcards.sample} \
+            -A \
+            -c 50 -C 100000 \
+            {input.aug_pg} \
           | bgzip -c > "$tmp_vcf"
 
-        # Strip PanSN prefixes from CHROM (sample#hap#contig → contig) so
-        # output coordinates match the conspec FASTA used by downstream rules.
+        # Strip PanSN prefixes (sample#hap#contig → contig).
         rename_map=$(mktemp -p "$_outdir")
-        trap "rm -f $pack_tmp $tmp_vcf $rename_map" EXIT
+        trap "rm -f $tmp_vcf $rename_map" EXIT
         bcftools view -h "$tmp_vcf" \
             | grep '^##contig=<ID=' \
             | sed 's/##contig=<ID=//;s/,.*//' \
@@ -1251,62 +1519,12 @@ rule vg_call:
 
         if [ -s "$rename_map" ]; then
             tmp_renamed=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
-            trap "rm -f $pack_tmp $tmp_vcf $rename_map $tmp_renamed" EXIT
+            trap "rm -f $tmp_vcf $rename_map $tmp_renamed" EXIT
             bcftools annotate --rename-chrs "$rename_map" -Oz -o "$tmp_renamed" "$tmp_vcf"
-            bcftools sort -Oz -o {output.vcf} "$tmp_renamed"
+            mv "$tmp_renamed" {output.vcf}
         else
-            bcftools sort -Oz -o {output.vcf} "$tmp_vcf"
+            mv "$tmp_vcf" {output.vcf}
         fi
-        tabix -p vcf {output.vcf}
-        """
-
-
-rule vg_merge_samples:
-    """Merge per-sample vg call VCFs into a cohort VCF that the popgen stack
-    consumes the same way as a bcftools-derived merged VCF. Written to the
-    bcftools/{ref}/combined path the {ref}-wildcarded popgen rules expect, so
-    the mc_graph 'reference' is now a synthetic entry whose variants come
-    entirely from vg call rather than from a surjected BAM + bcftools."""
-    input:
-        vcfs=expand(VC_OUTDIR / "vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
-        tbis=expand(VC_OUTDIR / "vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
-        fasta=ALIGN_CONSPEC,
-        fai=f"{ALIGN_CONSPEC}.fai",
-    output:
-        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
-    conda:
-        "envs/bcftools.yaml"
-    threads: 4
-    resources:
-        slurm_partition="short",
-        runtime=240,
-        mem_mb=8000,
-        cpus=4,
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.vcf})
-
-        # Normalize each per-sample VCF first: vg call snarl decomposition can
-        # emit different ALT orderings per sample at multiallelic sites, which
-        # breaks bcftools merge. norm -m -any splits multiallelics, -f
-        # left-aligns against the conspec FASTA so all samples share REF/ALT
-        # representations at each locus.
-        tmpdir=$(mktemp -d -p $(dirname {output.vcf}))
-        trap "rm -rf $tmpdir" EXIT
-
-        normed=()
-        for vcf in {input.vcfs}; do
-            base=$(basename "$vcf" .vcf.gz)
-            out="$tmpdir/$base.norm.vcf.gz"
-            bcftools norm -f {input.fasta} -m -any --threads {threads} \
-                -Oz -o "$out" "$vcf"
-            bcftools index -t "$out"
-            normed+=("$out")
-        done
-
-        bcftools merge --threads {threads} -Oz -o {output.vcf} "${{normed[@]}}"
         tabix -p vcf {output.vcf}
         """
 

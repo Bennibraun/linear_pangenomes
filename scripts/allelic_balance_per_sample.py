@@ -7,6 +7,7 @@ out_summary = snakemake.output.summary
 out_raw     = snakemake.output.raw
 ref_name    = snakemake.params.ref
 bins        = snakemake.params.bins
+min_depth   = int(getattr(snakemake.params, "min_depth", 10))
 
 vcf     = pysam.VariantFile(vcf_path)
 samples = list(vcf.header.samples)
@@ -31,7 +32,10 @@ for rec in vcf.fetch():
     if ref_depth is None or alt_depth is None:
         continue
     total = ref_depth + alt_depth
-    if total == 0:
+    # Low-depth het calls dominate the histogram with statistical noise from
+    # the small-N binomial. Require min_depth total reads at the het site so
+    # the ratio is informative about ref bias rather than sampling error.
+    if total < min_depth:
         continue
     ratio = ref_depth / total
     ratios.append(ratio)

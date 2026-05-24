@@ -1,6 +1,7 @@
 name: linear-pangenomes-plotting
 channels:
   - conda-forge
+  - bioconda
   - defaults
 dependencies:
   - python=3.11
@@ -9,3 +10,6 @@ dependencies:
   - pandas
   - numpy
   - scipy
+  - pysam
+  - bcftools
+  - htslib

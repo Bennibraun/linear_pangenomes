@@ -15,21 +15,125 @@ def _ref_lengths_path(wildcards):
 # ---------------------------------------------------------------------------
 # Allele Frequency Spectrum
 # ---------------------------------------------------------------------------
-rule afs_per_ref:
+# Linear refs: ANGSD folded SFS via realSFS (Jeon et al. 2026 protocol).
+# Genotype-likelihood-based, robust to low coverage. Folded because most
+# pipelines lack a reliable ancestral allele.
+#
+# mc_graph: VCF-allele-frequency-based SFS (the original vcftools approach).
+# ANGSD on surjected BAMs would underestimate diversity due to surjection
+# loss, so we use the post-bcftools VCF, same as the ROH route.
+rule angsd_saf_linear:
+    """Per-site genotype-likelihood allele frequencies on linear refs."""
     input:
-        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
+        bams=_bams_for_ref,
+        bais=_bais_for_ref,
+        fasta=lambda wildcards: _ref_fasta(wildcards),
+        fai=lambda wildcards: _ref_fai(wildcards),
     output:
-        afs=FST_OUTDIR / "afs/{ref}.afs.tsv"
+        saf_idx=FST_OUTDIR / "saf/{ref}/cohort.saf.idx",
+        saf_pos=FST_OUTDIR / "saf/{ref}/cohort.saf.pos.gz",
+        saf_gz=FST_OUTDIR / "saf/{ref}/cohort.saf.gz",
+    conda:
+        "../envs/roh.yaml"
+    threads: 8
+    wildcard_constraints:
+        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
+    resources:
+        slurm_partition="long",
+        runtime=480,
+        mem_mb=16000,
+        cpus=8,
+    params:
+        prefix=lambda wc: str(FST_OUTDIR / "saf" / wc.ref / "cohort"),
+        min_ind=lambda wc: max(1, int(0.8 * len(SHORT_SAMPLES))),
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {params.prefix})
+        bam_list=$(mktemp -p $(dirname {params.prefix}))
+        trap "rm -f $bam_list" EXIT
+        printf '%s\n' {input.bams} > "$bam_list"
+
+        # -doSaf 1 + -GL 1: per-site allele frequency likelihoods (SAMtools GL
+        # model). -anc {input.fasta} folds the SFS against the reference,
+        # which is what realSFS -fold 1 then collapses. We use the reference
+        # as ancestral because we have no outgroup; realSFS -fold 1 makes
+        # this folded so the choice of "ancestral" is irrelevant.
+        angsd -bam "$bam_list" \
+              -ref {input.fasta} -anc {input.fasta} \
+              -GL 1 -doSaf 1 \
+              -minQ 30 -minMapQ 20 \
+              -minInd {params.min_ind} \
+              -only_proper_pairs 0 -remove_bads 1 -uniqueOnly 1 \
+              -baq 2 -C 50 \
+              -P {threads} \
+              -out {params.prefix}
+        """
+
+
+rule angsd_sfs_linear:
+    """Folded SFS via realSFS — one value per minor-allele-count bin."""
+    input:
+        saf_idx=FST_OUTDIR / "saf/{ref}/cohort.saf.idx",
+    output:
+        sfs=FST_OUTDIR / "saf/{ref}/cohort.folded.sfs",
+    conda:
+        "../envs/roh.yaml"
+    threads: 8
+    wildcard_constraints:
+        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
+    resources:
+        slurm_partition="short",
+        runtime=240,
+        mem_mb=16000,
+        cpus=8,
+    shell:
+        r"""
+        set -euo pipefail
+        # -fold 1: collapse the unfolded SFS into folded (MAC 0..N).
+        realSFS {input.saf_idx} -fold 1 -P {threads} > {output.sfs}
+        """
+
+
+rule afs_per_ref_linear:
+    """Reshape the realSFS output into the canonical AFS bin TSV used by
+    plotting and the variant-count summary."""
+    input:
+        sfs=FST_OUTDIR / "saf/{ref}/cohort.folded.sfs",
+    output:
+        afs=FST_OUTDIR / "afs/{ref}.afs.tsv",
     conda:
         "../envs/fst_afs.yaml"
     params:
-        bins=AFS_BINS
+        bins=AFS_BINS,
+        n_samples=len(SHORT_SAMPLES),
+    wildcard_constraints:
+        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=2000,
+        cpus=1,
+    script:
+        "../scripts/afs_from_angsd_sfs.py"
+
+
+rule afs_per_ref_mc_graph:
+    """VCF-based SFS for mc_graph (ANGSD on surjected BAMs would be biased)."""
+    input:
+        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
+    output:
+        afs=FST_OUTDIR / "afs/mc_graph.afs.tsv",
+    conda:
+        "../envs/fst_afs.yaml"
+    params:
+        bins=AFS_BINS,
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
-        cpus=1
+        cpus=1,
     script:
         "../scripts/afs_per_ref.py"
 
@@ -73,6 +177,259 @@ rule fst_per_ref_pair:
           {params.window_args} \
           --out $prefix > /dev/null
         """
+
+
+# ---------------------------------------------------------------------------
+# F1 concordance between reference SNP call sets (Jeon et al. 2026 Table S2)
+# ---------------------------------------------------------------------------
+rule f1_concordance_pair:
+    """bcftools isec between a pair of refs that share coordinates, then
+    F1 from (shared, a_only, b_only). Restricted to contigs present in both
+    VCFs so refs with extra contigs (e.g. augref's SV_*) still work."""
+    input:
+        vcf_a=VC_OUTDIR / "bcftools/{ref_a}/combined/merged.vcf.gz",
+        vcf_b=VC_OUTDIR / "bcftools/{ref_b}/combined/merged.vcf.gz",
+        tbi_a=VC_OUTDIR / "bcftools/{ref_a}/combined/merged.vcf.gz.tbi",
+        tbi_b=VC_OUTDIR / "bcftools/{ref_b}/combined/merged.vcf.gz.tbi",
+    output:
+        f1=F1_OUTDIR / "{ref_a}__vs__{ref_b}.f1.tsv",
+    conda:
+        "../envs/plotting.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
+    params:
+        ref_a=lambda wc: wc.ref_a,
+        ref_b=lambda wc: wc.ref_b,
+    script:
+        "../scripts/f1_concordance.py"
+
+
+rule f1_concordance_summary:
+    """Aggregate all pairwise F1 results into a single table."""
+    input:
+        [F1_OUTDIR / f"{a}__vs__{b}.f1.tsv" for a, b in F1_PAIRS],
+    output:
+        summary=F1_OUTDIR / "f1_summary.tsv",
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=2000,
+        cpus=1,
+    run:
+        from pathlib import Path
+
+        out_path = Path(output.summary)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        rows, header = [], None
+        for path in input:
+            lines = Path(path).read_text().strip().splitlines()
+            if not lines:
+                continue
+            if header is None:
+                header = lines[0]
+            if len(lines) > 1:
+                rows.append(lines[1])
+        if header is None:
+            out_path.write_text("ref_a\tref_b\tshared\ta_only\tb_only\tprecision\trecall\tf1\n")
+        else:
+            out_path.write_text("\n".join([header] + rows) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Per-reference summary table (Jeon et al. 2026 Table 1 equivalent)
+# ---------------------------------------------------------------------------
+rule per_ref_summary:
+    """One row per reference with the headline comparison metrics:
+    SNP counts (raw + filtered), SV count (mc_graph only), mean mapping rate,
+    mean mapping quality, mean π, mean F_ROH, genome length, size vs conspec.
+    Mirrors Jeon et al. 2026 Table 1."""
+    input:
+        vcfs=expand(
+            VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+            ref=REFERENCE_NAMES,
+        ),
+        sv_vcfs=expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
+        metrics=METRICS_OUTDIR / "alignment_metrics.tsv",
+        froh=ROH_OUTDIR / "f_roh_summary.tsv",
+        pi=expand(PI_OUTDIR / "{ref}.windowed.pi", ref=REFERENCE_NAMES),
+    output:
+        summary=QC_OUTDIR / "per_ref_summary.tsv",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        refs=REFERENCE_NAMES,
+        fastas=[REFS_NESTED[r]["fasta"] for r in REFERENCE_NAMES],
+        fais=[f"{REFS_NESTED[r]['fasta']}.fai" for r in REFERENCE_NAMES],
+        conspec_ref="conspec",
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
+    script:
+        "../scripts/per_ref_summary.py"
+
+
+# ---------------------------------------------------------------------------
+# Per-sample QC summary (report-only; failed samples are flagged but not
+# auto-excluded from downstream analyses)
+# ---------------------------------------------------------------------------
+rule sample_qc_summary:
+    """Aggregate per-sample metrics across all refs into a single QC TSV.
+    Flags samples that violate any configured threshold but doesn't exclude
+    them — the user inspects this table and decides what to drop."""
+    input:
+        metrics=METRICS_OUTDIR / "alignment_metrics.tsv",
+        heterozygosity=expand(
+            HET_OUTDIR / "{ref}/per_sample_heterozygosity.tsv",
+            ref=REFERENCE_NAMES,
+        ),
+        froh_summary=ROH_OUTDIR / "f_roh_summary.tsv",
+    output:
+        qc=QC_OUTDIR / "sample_qc.tsv",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        min_depth=QC_MIN_DEPTH,
+        min_mapping_rate=QC_MIN_MAPPING_RATE,
+        min_het_rate=QC_MIN_HET_RATE,
+        max_het_rate=QC_MAX_HET_RATE,
+        max_missing_rate=QC_MAX_MISSING_RATE,
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/sample_qc.py"
+
+
+# ---------------------------------------------------------------------------
+# Per-sample heterozygosity (bcftools stats -s)
+# ---------------------------------------------------------------------------
+rule heterozygosity_per_ref:
+    """Per-sample non-reference het and hom counts from bcftools stats -s.
+    Het rate is computed against the count of called sites for that sample
+    (not the genome length) to make it depth-robust. Goes into the
+    per-sample QC summary."""
+    input:
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
+    output:
+        tsv=HET_OUTDIR / "{ref}/per_sample_heterozygosity.tsv",
+    conda:
+        "../envs/bcftools.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.tsv})
+        # bcftools stats emits a PSC block (Per-Sample Counts) with columns:
+        #   PSC  id  sample  nRefHom  nNonRefHom  nHets  nTransitions
+        #   nTransversions  nIndels  averageDepth  nSingletons  nHapRef
+        #   nHapAlt  nMissing
+        # Pull sample, nRefHom, nNonRefHom, nHets, nMissing, avgDepth; compute
+        # het_rate = nHets / (nRefHom + nNonRefHom + nHets) so missingness
+        # doesn't drag down the denominator.
+        {{
+            echo -e "sample\tref\tn_ref_hom\tn_nonref_hom\tn_het\tn_missing\tmean_depth\thet_rate"
+            bcftools stats -s - {input.vcf} \
+              | awk -v ref={wildcards.ref} '
+                  /^# PSC/ {{ next }}
+                  /^PSC\t/ {{
+                      sample = $3; nRefHom = $4; nNonRefHom = $5; nHet = $6
+                      nMissing = $14; avgDepth = $10
+                      called = nRefHom + nNonRefHom + nHet
+                      het_rate = (called > 0) ? nHet / called : 0
+                      printf "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%.6f\n",
+                             sample, ref, nRefHom, nNonRefHom, nHet,
+                             nMissing, avgDepth, het_rate
+                  }}
+              '
+        }} > {output.tsv}
+        """
+
+
+# ---------------------------------------------------------------------------
+# Per-sample relatedness (KING-robust kinship via vcftools --relatedness2)
+# ---------------------------------------------------------------------------
+rule relatedness_per_ref:
+    """Pairwise kinship coefficients across the cohort using the KING-robust
+    estimator. Output is a long-format TSV (INDV1\\tINDV2\\tRELATEDNESS_PHI).
+    Phi ~0.25 = parent-offspring/full-sibs; ~0.125 = half-sibs/avuncular;
+    < ~0.04 = unrelated."""
+    input:
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
+    output:
+        rel=RELATEDNESS_OUTDIR / "{ref}/relatedness.tsv",
+    conda:
+        "../envs/fst_afs.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        outdir=$(dirname {output.rel})
+        mkdir -p "$outdir"
+        prefix="$outdir/relatedness"
+        vcftools --gzvcf {input.vcf} --relatedness2 --out "$prefix" > /dev/null
+        # vcftools writes <prefix>.relatedness2 with columns:
+        #   INDV1 INDV2 N_AaAa N_AAaa N1_Aa N2_Aa RELATEDNESS_PHI
+        mv "$prefix.relatedness2" {output.rel}
+        """
+
+
+rule relatedness_summary:
+    """Cohort-wide relatedness table across all refs. One row per (ref,
+    sample_pair), tagged by the maximum kinship that pair shows on any ref so
+    related pairs surface even if one ref is noisy."""
+    input:
+        expand(RELATEDNESS_OUTDIR / "{ref}/relatedness.tsv", ref=REFERENCE_NAMES),
+    output:
+        summary=RELATEDNESS_OUTDIR / "relatedness_summary.tsv",
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=2000,
+        cpus=1,
+    run:
+        from pathlib import Path
+
+        out_path = Path(output.summary)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for path in input:
+            ref = Path(path).parts[-2]
+            with open(path) as fh:
+                header = fh.readline().strip().split("\t")
+                try:
+                    phi_idx = header.index("RELATEDNESS_PHI")
+                    i1_idx = header.index("INDV1")
+                    i2_idx = header.index("INDV2")
+                except ValueError:
+                    continue
+                for line in fh:
+                    parts = line.strip().split("\t")
+                    if len(parts) <= phi_idx:
+                        continue
+                    if parts[i1_idx] == parts[i2_idx]:
+                        continue
+                    rows.append((ref, parts[i1_idx], parts[i2_idx], parts[phi_idx]))
+        with out_path.open("w") as fh:
+            fh.write("ref\tsample1\tsample2\trelatedness_phi\n")
+            for r in rows:
+                fh.write("\t".join(r) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +506,7 @@ rule allelic_balance_per_sample:
     params:
         bins=AB_BINS,
         ref=lambda wildcards: wildcards.ref,
+        min_depth=AB_MIN_DEPTH,
     resources:
         slurm_partition="short",
         runtime=120,
@@ -215,9 +573,8 @@ rule angsd_roh_genotypes:
     with population allele frequencies in INFO/AF (per Jeon et al. 2026).
     bcftools roh on this BCF (downstream) uses --AF-file with these AFs and
     runs in PL mode, which is what the paper does and what works robustly
-    at low/medium coverage. Runs only on linear refs that have a real BAM —
-    mc_graph routes through mc_graph_roh_inputs instead, since vg call
-    works directly on the GAM and there's no BAM to feed ANGSD."""
+    at low/medium coverage. Runs only on linear refs — mc_graph routes through mc_graph_roh_inputs
+    instead, deriving AFs from the bcftools SNP VCF on surjected BAMs."""
     input:
         bams=_bams_for_ref,
         bais=_bais_for_ref,
@@ -237,8 +594,10 @@ rule angsd_roh_genotypes:
         mem_mb=16000,
         cpus=8,
     wildcard_constraints:
-        # mc_graph has no BAM; its ROH inputs come from mc_graph_roh_inputs.
-        ref="|".join(_BCFTOOLS_REFS) if _BCFTOOLS_REFS else "x^"
+        # mc_graph ROH inputs come from mc_graph_roh_inputs (which derives
+        # from the bcftools SNP VCF), not from ANGSD on the surjected BAMs.
+        # Surjection drops alt-path reads which would bias ANGSD's depth model.
+        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
     params:
         # Paper used setMinDepth=100, setMaxDepth=375 for ~25 samples — i.e.
         # ~4× and ~15× the cohort sample count. Scale with current cohort.
@@ -284,10 +643,8 @@ rule angsd_roh_genotypes:
 
 
 rule mc_graph_roh_inputs:
-    """ROH input pair (BCF + AF table) for mc_graph, derived from the
-    cohort vg call merged VCF rather than from BAMs. vg call's per-sample
-    GTs are already in conspec coordinates, so AF computed across samples
-    here is directly comparable to the ANGSD AF used for linear refs."""
+    """ROH input pair (BCF + AF table) for mc_graph. SNPs come from bcftools
+    on surjected BAMs (conspec coordinates), same pipeline as linear refs."""
     input:
         vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
         tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",

@@ -71,6 +71,7 @@ variant_calling:
     threads: 4
   vg:
     threads: 4
+    augment_min_cov: 3  # minimum read support to add a variant during cohort augmentation (vg augment -m)
 
 fst_afs:
   outdir: "results/fst_afs"
@@ -86,6 +87,7 @@ pi:
 allelic_balance:
   outdir: "results/allelic_balance"
   bins: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  min_depth: 10  # heterozygous sites with total DP < min_depth excluded as too noisy
 
 pcangsd:
   outdir: "results/pcangsd"
@@ -105,3 +107,26 @@ roh:
                            # Canonical chromosomes are auto-derived from the conspec .fai
                            # so SV_* contigs are excluded without manual configuration.
   bcftools_args: ""
+
+relatedness:
+  outdir: "results/relatedness"
+
+heterozygosity:
+  outdir: "results/heterozygosity"
+
+# Sample QC thresholds. Failed samples are flagged but NOT excluded from
+# downstream analyses — the user decides what to drop based on the summary.
+sample_qc:
+  outdir: "results/sample_qc"
+  min_depth: 5.0            # mean per-sample depth ×
+  min_mapping_rate: 0.8     # fraction of reads that mapped
+  min_het_rate: 0.0001      # per-sample het rate floor (catch sample contamination / wrong species)
+  max_het_rate: 0.05        # per-sample het rate ceiling (catch cross-contamination)
+  max_missing_rate: 0.2     # fraction of variant sites with missing GT
+
+# F1 concordance between reference SNP call sets (Jeon et al. 2026 Table S2).
+# Only refs sharing the conspec coordinate system can be intersected directly;
+# hetspec is excluded by default.
+f1_concordance:
+  outdir: "results/f1_concordance"
+  compatible_refs: ["conspec", "augref", "mc_graph"]
