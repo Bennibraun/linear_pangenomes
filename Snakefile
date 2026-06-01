@@ -650,6 +650,7 @@ rule vg_index:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         vg index -t {threads} --dist-name {output.dist} {input.gbz}
         """
 
@@ -671,6 +672,7 @@ rule vg_minimizer:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         vg minimizer -t {threads} -d {input.dist} -z {output.zipcodes} -o {output.min_idx} {input.gbz}
         """
 
@@ -893,6 +895,7 @@ rule vg_surject:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.bam})
         _workdir=$(dirname {output.bam})
 
@@ -932,7 +935,7 @@ rule vg_surject:
             else print $0 "\t" $0
         }}' "$path_list" > "$rename_map"
 
-        vg surject -x {input.gbz} -G {input.gam} \
+        vg surject -x {input.gbz} {input.gam} \
             -b -i --prune-low-cplx \
             -F "$path_list" \
             -t {threads} \
@@ -1404,6 +1407,7 @@ rule vg_sv_augment:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.aug_pg})
         # vg convert -p: GBZ → packed graph (vg augment requires .pg input)
         tmp_pg=$(mktemp --suffix=.pg)
@@ -1434,6 +1438,7 @@ rule vg_sv_snarls:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         vg snarls -t {threads} {input.aug_pg} > {output.snarls}
         """
 
@@ -1456,6 +1461,7 @@ rule vg_sv_pack:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.pack})
         vg pack -t {threads} -Q 5 -x {input.aug_pg} -g {input.gam} -o {output.pack}
         """
@@ -1488,6 +1494,7 @@ rule vg_sv_call:
     shell:
         r"""
         set -euo pipefail
+        export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.vcf})
         _outdir=$(dirname {output.vcf})
 
