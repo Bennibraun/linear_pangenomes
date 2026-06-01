@@ -7,3 +7,4 @@ dependencies:
   - vg
   - htslib
   - bcftools
+  - samtools
