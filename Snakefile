@@ -936,9 +936,11 @@ rule vg_surject:
         }}' "$path_list" > "$rename_map"
 
         vg surject -x {input.gbz} {input.gam} \
-            -b -i --prune-low-cplx \
+            -b --prune-low-cplx \
             -F "$path_list" \
             -t {threads} \
+          | samtools sort -n -@ {threads} \
+          | samtools fixmate -m -@ {threads} - - \
           | samtools sort -@ {threads} -O bam -o "$_workdir/{wildcards.sample}.surject.tmp.bam"
 
         # Strip PanSN prefixes from @SQ headers so CHROM matches conspec.
