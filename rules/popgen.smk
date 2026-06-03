@@ -40,7 +40,7 @@ rule angsd_saf_linear:
         ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
     resources:
         slurm_partition="long",
-        runtime=480,
+        runtime=960,
         mem_mb=16000,
         cpus=8,
     params:
