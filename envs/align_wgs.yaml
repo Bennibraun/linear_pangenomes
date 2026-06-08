@@ -4,8 +4,8 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  - bwa
-  - minimap2
-  - rasusa>=2
-  - samtools
-  - vg
+  - bwa >=0.7.17
+  - minimap2 >=2.26
+  - rasusa >=2
+  - samtools >=1.17
+  - vg >=1.50

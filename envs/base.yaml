@@ -6,5 +6,5 @@ channels:
 dependencies:
   - python=3.11
   - requests
-  - pandas
-  - pysam
+  - pandas >=2.0
+  - pysam >=0.21

@@ -1337,8 +1337,7 @@ rule bcftools_joint_call:
         set -euo pipefail
         mkdir -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined
         bam_list=$(mktemp -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined)
-        sample_rename=$(mktemp -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined)
-        trap "rm -f $bam_list $sample_rename" EXIT
+        trap "rm -f $bam_list" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
         bcftools mpileup \
           -f {input.fasta} \
@@ -1353,17 +1352,8 @@ rule bcftools_joint_call:
           -a GQ \
           --threads {threads} \
           -Oz \
+          --write-index=tbi \
           -o {output.vcf}
-
-        # BAMs without @RG SM: tags (e.g. surjected mc_graph BAMs) get the
-        # filepath as the sample name. Rename back to the sample ID.
-        bcftools query -l {output.vcf} | while read -r old; do
-            base=$(basename "$old" .{wildcards.ref}.bam)
-            printf '%s\t%s\n' "$old" "$base"
-        done > "$sample_rename"
-        bcftools reheader -s "$sample_rename" -o {output.vcf}.tmp {output.vcf}
-        mv {output.vcf}.tmp {output.vcf}
-        bcftools index -t {output.vcf}
         """
 
 # ============================================================================

@@ -4,4 +4,4 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  - vcftools
+  - vcftools >=0.1.16

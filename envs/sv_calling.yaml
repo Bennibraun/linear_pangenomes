@@ -5,12 +5,12 @@ channels:
   - defaults
 dependencies:
   - python=3.11
-  - pysam
-  - minimap2
-  - samtools
-  - bcftools
-  - sniffles
-  - cutesv
-  - survivor
-  - jasminesv
-  - cd-hit
+  - pysam >=0.21
+  - minimap2 >=2.26
+  - samtools >=1.17
+  - bcftools >=1.17
+  - sniffles >=2.2
+  - cutesv >=2.1
+  - survivor >=1.0.7
+  - jasminesv >=1.1.5
+  - cd-hit >=4.8.1
