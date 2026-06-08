@@ -747,7 +747,7 @@ rule ld_prune_vcf:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
     conda:
-        "../envs/pcangsd.yaml"
+        "../envs/ld_prune.yaml"
     params:
         maf=PCANGSD_MAF,
         window=PCANGSD_LD_WINDOW,

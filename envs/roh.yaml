@@ -4,7 +4,7 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  - bcftools >=1.17
-  - htslib >=1.17
+  - bcftools >=1.9
+  - htslib >=1.9
   - angsd >=0.940
   - python=3.11

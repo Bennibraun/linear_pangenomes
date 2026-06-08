@@ -7,5 +7,3 @@ dependencies:
   - python=3.11
   - pcangsd >=1.10
   - plink >=1.90b6
-  - bcftools >=1.17
-  - htslib >=1.17
