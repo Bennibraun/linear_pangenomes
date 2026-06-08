@@ -888,9 +888,9 @@ rule vg_surject:
         "envs/vg_call.yaml"
     threads: ALIGN_THREADS
     resources:
-        slurm_partition="long",
-        runtime=480,
-        mem_mb=32000,
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=16000,
         cpus=ALIGN_THREADS
     shell:
         r"""
