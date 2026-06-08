@@ -14,7 +14,8 @@
       "Bash(git commit -m ':*)",
       "Bash(cat)",
       "Read(//tmp/**)",
-      "WebFetch(domain:snakemake.github.io)"
+      "WebFetch(domain:snakemake.github.io)",
+      "WebFetch(domain:samtools.github.io)"
     ]
   }
 }
