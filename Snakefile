@@ -102,6 +102,8 @@ CACTUS_MAX_CORES = CACTUS_CFG.get("max_cores", 8)
 CACTUS_REF_CONTIGS = CACTUS_CFG.get("ref_contigs", "")
 CACTUS_EXTRA_ARGS = CACTUS_CFG.get("extra_args", "")
 
+VG_IMAGE = "docker://quay.io/vgteam/vg:v1.74.0"
+
 ALIGN_CFG = config["align_wgs"]
 ALIGN_OUTDIR = Path(ALIGN_CFG.get("outdir", "results/wgs_alignments"))
 ALIGN_CACTUS_GBZ = ALIGN_CFG.get("cactus_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
@@ -639,8 +641,8 @@ rule vg_index:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
         dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist"
-    conda:
-        "envs/align_wgs.yaml"
+    container:
+        VG_IMAGE
     threads: 8
     resources:
         slurm_partition="long",
@@ -661,8 +663,8 @@ rule vg_minimizer:
     output:
         min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",
         zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.zipcodes"
-    conda:
-        "envs/align_wgs.yaml"
+    container:
+        VG_IMAGE
     threads: 8
     resources:
         slurm_partition="long",
@@ -837,8 +839,8 @@ rule giraffe_align:
         zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.zipcodes"
     output:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
-    conda:
-        "envs/align_wgs.yaml"
+    container:
+        VG_IMAGE
     threads:
         ALIGN_THREADS
     resources:
@@ -884,8 +886,8 @@ rule vg_surject:
     output:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai",
-    conda:
-        "envs/vg_call.yaml"
+    container:
+        VG_IMAGE
     threads: ALIGN_THREADS
     resources:
         slurm_partition="short",
@@ -1064,8 +1066,8 @@ rule align_metrics_per_gam:
     output:
         cactus=METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv",
         mc_graph=METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv"
-    conda:
-        "envs/align_metrics.yaml"
+    container:
+        VG_IMAGE
     threads:
         METRICS_THREADS
     resources:
@@ -1371,8 +1373,8 @@ rule vg_sv_combine_gams:
         gams=expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
     output:
         combined_gam=VC_OUTDIR / "sv/vg/combined.gam",
-    conda:
-        "envs/vg_call.yaml"
+    container:
+        VG_IMAGE
     resources:
         slurm_partition="short",
         runtime=120,
@@ -1396,8 +1398,8 @@ rule vg_sv_augment:
     output:
         aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
         aug_gam=VC_OUTDIR / "sv/vg/augmented.gam",
-    conda:
-        "envs/vg_call.yaml"
+    container:
+        VG_IMAGE
     threads: VG_THREADS
     resources:
         slurm_partition="long",
@@ -1429,8 +1431,8 @@ rule vg_sv_snarls:
         aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
     output:
         snarls=VC_OUTDIR / "sv/vg/augmented.snarls",
-    conda:
-        "envs/vg_call.yaml"
+    container:
+        VG_IMAGE
     threads: VG_THREADS
     resources:
         slurm_partition="long",
@@ -1452,8 +1454,8 @@ rule vg_sv_pack:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
     output:
         pack=VC_OUTDIR / "sv/vg/{sample}.pack",
-    conda:
-        "envs/vg_call.yaml"
+    container:
+        VG_IMAGE
     threads: VG_THREADS
     resources:
         slurm_partition="long",
@@ -1485,8 +1487,8 @@ rule vg_sv_call:
     output:
         vcf=VC_OUTDIR / "sv/vg/{sample}.vcf.gz",
         tbi=VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi",
-    conda:
-        "envs/vg_call.yaml"
+    container:
+        VG_IMAGE
     threads: VG_THREADS
     resources:
         slurm_partition="long",

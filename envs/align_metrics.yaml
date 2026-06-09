@@ -6,4 +6,3 @@ channels:
 dependencies:
   - python=3.11
   - samtools >=1.9
-  - vg =1.74.0
