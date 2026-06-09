@@ -48,7 +48,7 @@ sv_calling:
   flank: 200
 
 cactus:
-  image: "docker://quay.io/comparative-genomics-toolkit/cactus:v2.9.9"
+  image: "docker://quay.io/comparative-genomics-toolkit/cactus:v3.2.1"
   outname: "cactus_graph"
   max_cores: 8
   ref_contigs: ""

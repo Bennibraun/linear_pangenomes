@@ -5,8 +5,8 @@ channels:
   - defaults
 dependencies:
   - python=3.11
-  - nanostat >=1.6
-  - nanoplot >=1.41
-  - hifiasm >=0.19
-  - quast >=5.2
-  - busco >=5.5
+  - nanostat
+  - nanoplot
+  - hifiasm
+  - quast
+  - busco

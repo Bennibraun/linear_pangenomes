@@ -7,4 +7,4 @@ dependencies:
   - python=3.11
   - bcftools >=1.9
   - htslib >=1.9
-  - vcftools >=0.1.16
+  - vcftools

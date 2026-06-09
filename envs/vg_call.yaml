@@ -4,7 +4,7 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  - vg >=1.50
+  - vg =1.74.0
   - htslib >=1.9
   - bcftools >=1.9
   - samtools >=1.9

@@ -6,5 +6,5 @@ channels:
 dependencies:
   - bcftools >=1.9
   - htslib >=1.9
-  - angsd >=0.940
+  - angsd
   - python=3.11
