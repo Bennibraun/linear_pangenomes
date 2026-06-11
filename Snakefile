@@ -209,15 +209,6 @@ PCANGSD_N_PCS = PCANGSD_CFG.get("n_pcs", 10)
 
 PLOT_OUTDIR = Path(config.get("plot", {}).get("outdir", "results/plots"))
 
-# Dynamically bind any absolute reference paths into singularity
-_bind_paths = set()
-for ref in REFS_NESTED.values():
-    p = Path(ref["fasta"])
-    if p.is_absolute():
-        _bind_paths.add(str(p.parent))
-
-singularity_args = ("--bind " + ",".join(_bind_paths)) if _bind_paths else ""
-
 
 shell.executable("bash")
 
