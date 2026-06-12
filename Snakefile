@@ -1391,12 +1391,12 @@ rule vg_sv_augment:
         aug_gam=VC_OUTDIR / "sv/vg/augmented.gam",
     container:
         VG_IMAGE
-    threads: VG_THREADS
+    threads: 16
     resources:
-        slurm_partition="long",
+        slurm_partition="highmem",
         runtime=2880,
-        mem_mb=64000,
-        cpus=VG_THREADS
+        mem_mb=128000,
+        cpus=16
     params:
         min_cov=VG_AUGMENT_MIN_COV,
     shell:
