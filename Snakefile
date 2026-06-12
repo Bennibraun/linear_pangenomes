@@ -1330,7 +1330,8 @@ rule bcftools_joint_call:
         set -euo pipefail
         mkdir -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined
         bam_list=$(mktemp -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined)
-        trap "rm -f $bam_list" EXIT
+        tmp_vcf=$(mktemp -p {VC_OUTDIR}/bcftools/{wildcards.ref}/combined --suffix=.vcf.gz)
+        trap "rm -f $bam_list $tmp_vcf" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
         bcftools mpileup \
           -f {input.fasta} \
@@ -1345,8 +1346,16 @@ rule bcftools_joint_call:
           -a GQ \
           --threads {threads} \
           -Oz \
-          --write-index=tbi \
+          -o "$tmp_vcf"
+
+        # Strip paths from sample names: "results/.../SRR123.mc_graph.bam" → "SRR123"
+        bcftools query -l "$tmp_vcf" \
+          | sed 's|.*/||; s|\..*||' \
+          > "$tmp_vcf.samples"
+        bcftools reheader -s "$tmp_vcf.samples" "$tmp_vcf" \
           -o {output.vcf}
+        rm -f "$tmp_vcf.samples"
+        bcftools index -t {output.vcf}
         """
 
 # ============================================================================
