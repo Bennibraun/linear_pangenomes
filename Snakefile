@@ -1411,22 +1411,20 @@ rule vg_sv_pack:
         """
 
 
-rule vg_sv_call:
+rule vg_sv_call_raw:
     """Genotype SVs per sample from the pangenome graph.
     -c 50 / -C 100000: only snarls with traversals between 50 bp and 100 kb
     (SVs only; skips SNP-scale snarls and the pathologically large snarls
     that cause multi-day runtimes).
     -A: call all snarls including nested (Jeon et al. 2026). We don't pass -a
     (which would emit 0/0 reference calls at every snarl); for the variant
-    counts and SV-based popgen we only need variant sites.
-    Strips PanSN prefixes from CHROM."""
+    counts and SV-based popgen we only need variant sites."""
     input:
         gbz=VG_GBZ,
         snarls=VC_OUTDIR / "sv/vg/graph.snarls",
         pack=VC_OUTDIR / "sv/vg/{sample}.pack",
     output:
-        vcf=VC_OUTDIR / "sv/vg/{sample}.vcf.gz",
-        tbi=VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi",
+        vcf=temp(VC_OUTDIR / "sv/vg/{sample}.raw.vcf"),
     container:
         VG_IMAGE
     threads: VG_THREADS
@@ -1440,11 +1438,6 @@ rule vg_sv_call:
         set -euo pipefail
         export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.vcf})
-        _outdir=$(dirname {output.vcf})
-
-        tmp_vcf=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
-        trap "rm -f $tmp_vcf" EXIT
-
         vg call -t {threads} \
             -k {input.pack} \
             -r {input.snarls} \
@@ -1452,13 +1445,33 @@ rule vg_sv_call:
             -A \
             -c 50 -C 100000 \
             {input.gbz} \
-          | bgzip -c > "$tmp_vcf"
+          > {output.vcf}
+        """
 
-        # Strip PanSN prefixes (sample#hap#contig → contig).
+
+rule vg_sv_call_postprocess:
+    """Strip PanSN prefixes from CHROM, compress, and index."""
+    input:
+        vcf=VC_OUTDIR / "sv/vg/{sample}.raw.vcf",
+    output:
+        vcf=VC_OUTDIR / "sv/vg/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi",
+    conda:
+        "envs/bcftools.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=2000,
+        cpus=1
+    shell:
+        r"""
+        set -euo pipefail
+        _outdir=$(dirname {output.vcf})
+
+        # Strip PanSN prefixes (sample#hap#contig → contig) in headers and data.
         rename_map=$(mktemp -p "$_outdir")
-        trap "rm -f $tmp_vcf $rename_map" EXIT
-        bcftools view -h "$tmp_vcf" \
-            | grep '^##contig=<ID=' \
+        trap "rm -f $rename_map" EXIT
+        grep '^##contig=<ID=' {input.vcf} \
             | sed 's/##contig=<ID=//;s/,.*//' \
             | while read -r chrom; do
                 n=$(echo "$chrom" | awk -F'#' '{{print NF}}')
@@ -1469,12 +1482,9 @@ rule vg_sv_call:
             done > "$rename_map"
 
         if [ -s "$rename_map" ]; then
-            tmp_renamed=$(mktemp -p "$_outdir" --suffix=.vcf.gz)
-            trap "rm -f $tmp_vcf $rename_map $tmp_renamed" EXIT
-            bcftools annotate --rename-chrs "$rename_map" -Oz -o "$tmp_renamed" "$tmp_vcf"
-            mv "$tmp_renamed" {output.vcf}
+            bcftools annotate --rename-chrs "$rename_map" -Oz -o {output.vcf} {input.vcf}
         else
-            mv "$tmp_vcf" {output.vcf}
+            bgzip -c {input.vcf} > {output.vcf}
         fi
         tabix -p vcf {output.vcf}
         """
