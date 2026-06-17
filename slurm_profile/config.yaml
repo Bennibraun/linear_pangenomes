@@ -20,6 +20,7 @@ max-jobs-per-second: 5
 max-status-checks-per-second: 1
 keep-going: true
 rerun-incomplete: true
+retries: 2
 # rerun-triggers:
   # - mtime
 printshellcmds: true

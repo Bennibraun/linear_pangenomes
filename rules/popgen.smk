@@ -587,12 +587,12 @@ rule angsd_roh_genotypes:
         tbi=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz.tbi",
     conda:
         "../envs/roh.yaml"
-    threads: 8
+    threads: 16
     resources:
         slurm_partition="long",
-        runtime=720,
-        mem_mb=16000,
-        cpus=8,
+        runtime=lambda wc, attempt: 1440 * attempt,
+        mem_mb=lambda wc, attempt: 16000 * attempt,
+        cpus=16,
     wildcard_constraints:
         # mc_graph ROH inputs come from mc_graph_roh_inputs (which derives
         # from the bcftools SNP VCF), not from ANGSD on the surjected BAMs.

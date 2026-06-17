@@ -125,7 +125,7 @@ VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
 BCFTOOLS_THREADS = BCFTOOLS_CFG.get("threads", 4)
 VG_GBZ = VG_CFG.get("graph_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 VG_THREADS = VG_CFG.get("threads", 4)
-VG_AUGMENT_MIN_COV = VG_CFG.get("augment_min_cov", 3)
+
 
 FST_CFG = config["fst_afs"]
 FST_OUTDIR = Path(FST_CFG.get("outdir", "results/fst_afs"))
@@ -309,10 +309,7 @@ rule all:
         # Plots
         expand(PLOT_OUTDIR / "pca/{ref}_pca.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "selection/{ref}_selection_scan.png", ref=REFERENCE_NAMES),
-        expand(PLOT_OUTDIR / "fst/{ref}_{pop1}_vs_{pop2}_fst.png",
-               ref=REFERENCE_NAMES,
-               pop1=[p[0] for p in POP_PAIR_TUPLES],
-               pop2=[p[1] for p in POP_PAIR_TUPLES]),
+        [PLOT_OUTDIR / f"fst/{ref}_{pop1}_vs_{pop2}_fst.png" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
         expand(PLOT_OUTDIR / "afs/{ref}_afs.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "pi/{ref}_pi.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "tajimas_d/{ref}_tajimas_d.png", ref=REFERENCE_NAMES),
@@ -1359,78 +1356,20 @@ rule bcftools_joint_call:
         """
 
 # ============================================================================
-# Graph SV calling (mc_graph only, for benchmarking/comparison)
-# Follows Jeon et al. 2026: augment graph with all samples' reads combined,
-# then call per-sample with -c 50 -C 100000 (SVs only, 50 bp – 100 kb).
+# Graph SV genotyping (mc_graph only, for benchmarking/comparison)
+# Genotypes SVs already present in the Cactus pangenome graph by packing
+# per-sample GAMs directly against the GBZ and calling per-sample snarls.
+# vg wiki confirms de novo SV calling via augment does not work; genotyping
+# existing graph structure is the supported workflow.
 # Output goes to a separate sv/vg/ path — not consumed by the popgen stack.
 # ============================================================================
 
-rule vg_sv_combine_gams:
-    """Concatenate all samples' GAMs into one file for cohort augmentation.
-    vg augment is run on the combined GAM so the augmented graph embeds
-    variation from the full cohort, not just one sample."""
-    input:
-        gams=expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
-    output:
-        combined_gam=VC_OUTDIR / "sv/vg/combined.gam",
-    container:
-        VG_IMAGE
-    resources:
-        slurm_partition="short",
-        runtime=120,
-        mem_mb=8000,
-        cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {output.combined_gam})
-        cat {input.gams} > {output.combined_gam}
-        """
-
-
-rule vg_sv_augment:
-    """Augment the GBZ with cohort-wide short-read variation. -s embeds reads
-    as paths; -m 3 requires at least 3 reads of support to add a variant.
-    Output is a packed-graph (.pg) shared by all per-sample SV calling jobs."""
+rule vg_sv_snarls:
+    """Compute snarls on the pangenome graph once, shared across all samples."""
     input:
         gbz=VG_GBZ,
-        combined_gam=VC_OUTDIR / "sv/vg/combined.gam",
     output:
-        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
-        aug_gam=VC_OUTDIR / "sv/vg/augmented.gam",
-    container:
-        VG_IMAGE
-    threads: 16
-    resources:
-        slurm_partition="highmem",
-        runtime=2880,
-        mem_mb=128000,
-        cpus=16
-    params:
-        min_cov=VG_AUGMENT_MIN_COV,
-    shell:
-        r"""
-        set -euo pipefail
-        export OMP_NUM_THREADS={threads}
-        mkdir -p $(dirname {output.aug_pg})
-        # vg convert -p: GBZ → packed graph (vg augment requires .pg input)
-        tmp_pg=$(mktemp --suffix=.pg)
-        trap "rm -f $tmp_pg" EXIT
-        vg convert -p {input.gbz} > "$tmp_pg"
-
-        vg augment -t {threads} "$tmp_pg" {input.combined_gam} \
-            -s -m {params.min_cov} -q 5 -Q 5 \
-            -A {output.aug_gam} \
-            > {output.aug_pg}
-        """
-
-
-rule vg_sv_snarls:
-    """Compute snarls on the augmented graph once, shared across all samples."""
-    input:
-        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
-    output:
-        snarls=VC_OUTDIR / "sv/vg/augmented.snarls",
+        snarls=VC_OUTDIR / "sv/vg/graph.snarls",
     container:
         VG_IMAGE
     threads: VG_THREADS
@@ -1443,14 +1382,15 @@ rule vg_sv_snarls:
         r"""
         set -euo pipefail
         export OMP_NUM_THREADS={threads}
-        vg snarls -t {threads} {input.aug_pg} > {output.snarls}
+        mkdir -p $(dirname {output.snarls})
+        vg snarls -t {threads} {input.gbz} > {output.snarls}
         """
 
 
 rule vg_sv_pack:
-    """Compute per-sample read support against the augmented graph."""
+    """Compute per-sample read support against the pangenome graph."""
     input:
-        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
+        gbz=VG_GBZ,
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam",
     output:
         pack=VC_OUTDIR / "sv/vg/{sample}.pack",
@@ -1467,12 +1407,12 @@ rule vg_sv_pack:
         set -euo pipefail
         export OMP_NUM_THREADS={threads}
         mkdir -p $(dirname {output.pack})
-        vg pack -t {threads} -Q 5 -x {input.aug_pg} -g {input.gam} -o {output.pack}
+        vg pack -t {threads} -Q 5 -x {input.gbz} -g {input.gam} -o {output.pack}
         """
 
 
 rule vg_sv_call:
-    """Call SVs per sample from the cohort-augmented graph.
+    """Genotype SVs per sample from the pangenome graph.
     -c 50 / -C 100000: only snarls with traversals between 50 bp and 100 kb
     (SVs only; skips SNP-scale snarls and the pathologically large snarls
     that cause multi-day runtimes).
@@ -1481,8 +1421,8 @@ rule vg_sv_call:
     counts and SV-based popgen we only need variant sites.
     Strips PanSN prefixes from CHROM."""
     input:
-        aug_pg=VC_OUTDIR / "sv/vg/augmented.pg",
-        snarls=VC_OUTDIR / "sv/vg/augmented.snarls",
+        gbz=VG_GBZ,
+        snarls=VC_OUTDIR / "sv/vg/graph.snarls",
         pack=VC_OUTDIR / "sv/vg/{sample}.pack",
     output:
         vcf=VC_OUTDIR / "sv/vg/{sample}.vcf.gz",
@@ -1511,7 +1451,7 @@ rule vg_sv_call:
             -s {wildcards.sample} \
             -A \
             -c 50 -C 100000 \
-            {input.aug_pg} \
+            {input.gbz} \
           | bgzip -c > "$tmp_vcf"
 
         # Strip PanSN prefixes (sample#hap#contig → contig).
