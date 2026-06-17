@@ -1433,7 +1433,7 @@ rule vg_sv_call:
     resources:
         slurm_partition="long",
         runtime=2880,
-        mem_mb=64000,
+        mem_mb=16000,
         cpus=VG_THREADS
     shell:
         r"""
