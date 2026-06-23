@@ -1331,6 +1331,7 @@ rule bcftools_joint_call:
         trap "rm -f $bam_list $tmp_vcf" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
         bcftools mpileup \
+          -A \
           -f {input.fasta} \
           -b "$bam_list" \
           -a AD,DP \
