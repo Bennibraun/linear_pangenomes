@@ -468,91 +468,17 @@ rule ref_lengths:
         """
 
 
-rule angsd_roh_genotypes:
-    """Genotype likelihoods from ANGSD across the cohort, producing a BCF
-    with population allele frequencies in INFO/AF (per Jeon et al. 2026).
-    bcftools roh on this BCF (downstream) uses --AF-file with these AFs and
-    runs in PL mode, which is what the paper does and what works robustly
-    at low/medium coverage. Runs only on linear refs — mc_graph routes through mc_graph_roh_inputs
-    instead, deriving AFs from the bcftools SNP VCF on surjected BAMs."""
+rule roh_inputs:
+    """ROH input pair (BCF + AF table) for all refs. Uses the bcftools
+    merged VCF with fill-tags to compute cohort AF from genotypes."""
     input:
-        bams=_bams_for_ref,
-        bais=_bais_for_ref,
-        fasta=lambda wildcards: _ref_fasta(wildcards),
-        fai=lambda wildcards: _ref_fai(wildcards),
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
     output:
         bcf=ROH_OUTDIR / "{ref}/roh_input.bcf",
         csi=ROH_OUTDIR / "{ref}/roh_input.bcf.csi",
         freqs=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz",
         tbi=ROH_OUTDIR / "{ref}/roh_input.freqs.tab.gz.tbi",
-    conda:
-        "../envs/roh.yaml"
-    threads: 16
-    resources:
-        slurm_partition="long",
-        runtime=lambda wc, attempt: 1440 * attempt,
-        mem_mb=lambda wc, attempt: 16000 * attempt,
-        cpus=16,
-    wildcard_constraints:
-        # mc_graph ROH inputs come from mc_graph_roh_inputs (which derives
-        # from the bcftools SNP VCF), not from ANGSD on the surjected BAMs.
-        # Surjection drops alt-path reads which would bias ANGSD's depth model.
-        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
-    params:
-        # Paper used setMinDepth=100, setMaxDepth=375 for ~25 samples — i.e.
-        # ~4× and ~15× the cohort sample count. Scale with current cohort.
-        min_depth=lambda wc: 4 * len(SHORT_SAMPLES),
-        max_depth=lambda wc: 15 * len(SHORT_SAMPLES),
-        # 80% of samples must have data at a site for it to be used.
-        min_ind=lambda wc: max(1, int(0.8 * len(SHORT_SAMPLES))),
-        prefix=lambda wc: str(ROH_OUTDIR / wc.ref / "angsd"),
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {ROH_OUTDIR}/{wildcards.ref}
-        bam_list=$(mktemp -p {ROH_OUTDIR}/{wildcards.ref})
-        trap "rm -f $bam_list" EXIT
-        printf '%s\n' {input.bams} > "$bam_list"
-
-        # only_proper_pairs=0: graph-derived alignments (in case any survive
-        # here) don't always set proper-pair flags. Setting this to 1 can
-        # silently drop everything.
-        angsd -bam "$bam_list" \
-              -ref {input.fasta} -anc {input.fasta} \
-              -GL 1 -snp_pval 1e-6 \
-              -dobcf 1 -dopost 1 -domajorminor 5 -domaf 1 -docounts 1 \
-              -minQ 30 -minMapQ 20 \
-              -minInd {params.min_ind} \
-              -setMinDepth {params.min_depth} -setMaxDepth {params.max_depth} \
-              -only_proper_pairs 0 -remove_bads 1 -uniqueOnly 1 \
-              -baq 2 -C 50 \
-              -P {threads} \
-              -out {params.prefix}
-
-        # ANGSD writes <prefix>.bcf — move to the canonical roh_input name.
-        if [ -f "{params.prefix}.bcf" ]; then
-            mv "{params.prefix}.bcf" {output.bcf}
-        fi
-
-        bcftools index {output.bcf}
-
-        bcftools query -f '%CHROM\t%POS\t%REF,%ALT\t%INFO/AF\n' {output.bcf} \
-            | bgzip -c > {output.freqs}
-        tabix -s1 -b2 -e2 {output.freqs}
-        """
-
-
-rule mc_graph_roh_inputs:
-    """ROH input pair (BCF + AF table) for mc_graph. SNPs come from bcftools
-    on surjected BAMs (conspec coordinates), same pipeline as linear refs."""
-    input:
-        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
-    output:
-        bcf=ROH_OUTDIR / "mc_graph/roh_input.bcf",
-        csi=ROH_OUTDIR / "mc_graph/roh_input.bcf.csi",
-        freqs=ROH_OUTDIR / "mc_graph/roh_input.freqs.tab.gz",
-        tbi=ROH_OUTDIR / "mc_graph/roh_input.freqs.tab.gz.tbi",
     conda:
         "../envs/roh.yaml"
     threads: 4
@@ -564,11 +490,8 @@ rule mc_graph_roh_inputs:
     shell:
         r"""
         set -euo pipefail
-        mkdir -p {ROH_OUTDIR}/mc_graph
+        mkdir -p {ROH_OUTDIR}/{wildcards.ref}
 
-        # bcftools +fill-tags adds INFO/AF computed from cohort GTs so the
-        # downstream --AF-file path matches what ANGSD provides for linear
-        # refs.
         bcftools +fill-tags {input.vcf} -- -t AF \
             | bcftools view -Ob --threads {threads} -o {output.bcf}
 
