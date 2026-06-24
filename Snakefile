@@ -152,6 +152,7 @@ ROH_CFG = config["roh"]
 ROH_OUTDIR = Path(ROH_CFG.get("outdir", "results/roh"))
 ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
 ROH_MIN_LENGTH = ROH_CFG.get("min_roh_length", 100000)
+ROH_RECOMB_RATE = ROH_CFG.get("recomb_rate", 30)
 ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
 
 RELATEDNESS_CFG = config.get("relatedness", {})
@@ -567,7 +568,8 @@ rule make_cactus_graph:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
         vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.d2.dist"
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl",
+        ri=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.ri"
     container:
         CACTUS_IMAGE
     threads:
@@ -592,10 +594,9 @@ rule make_cactus_graph:
           {params.jobstore} \
           {input.seqfile} \
           --reference "reference" \
-          --collapse \
+          --haplo \
           --outDir {params.outdir} \
           --outName "{params.outname}" \
-          --giraffe \
           --vcf \
           --gfa \
           --gbz \
@@ -622,48 +623,6 @@ rule bwa_index:
         r"""
         set -euo pipefail
         bwa index {input.fasta}
-        """
-
-rule vg_index:
-    input:
-        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
-    output:
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist"
-    container:
-        VG_IMAGE
-    threads: 8
-    resources:
-        slurm_partition="long",
-        runtime=480,
-        mem_mb=32000,
-        cpus=8
-    shell:
-        r"""
-        set -euo pipefail
-        export OMP_NUM_THREADS={threads}
-        vg index -t {threads} --dist-name {output.dist} {input.gbz}
-        """
-
-rule vg_minimizer:
-    input:
-        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist"
-    output:
-        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",
-        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.zipcodes"
-    container:
-        VG_IMAGE
-    threads: 8
-    resources:
-        slurm_partition="long",
-        runtime=480,
-        mem_mb=32000,
-        cpus=8
-    shell:
-        r"""
-        set -euo pipefail
-        export OMP_NUM_THREADS={threads}
-        vg minimizer -t {threads} -d {input.dist} -z {output.zipcodes} -o {output.min_idx} {input.gbz}
         """
 
 rule downsample_short_reads:
@@ -822,9 +781,7 @@ rule giraffe_align:
         fq1=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
         fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         gbz=ALIGN_CACTUS_GBZ,
-        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.dist",
-        min_idx=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.withzip.min",
-        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vg.zipcodes"
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
     output:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
     container:
@@ -842,10 +799,9 @@ rule giraffe_align:
         export OPENBLAS_NUM_THREADS={threads}
         export OMP_NUM_THREADS={threads}
         mkdir -p {ALIGN_OUTDIR}/{wildcards.sample}
-        vg giraffe -Z {input.gbz} --dist-name {input.dist} \
-          -m {input.min_idx} \
+        vg giraffe -Z {input.gbz} -H {input.hapl} \
           -t {threads} -f {input.fq1} -f {input.fq2} -p \
-          --rescue-attempts 0 --sample {wildcards.sample} > {output.gam}
+          --rescue-attempts 5 --sample {wildcards.sample} > {output.gam}
         """
 
 rule vg_surject:
@@ -1317,6 +1273,8 @@ rule bcftools_joint_call:
         "envs/bcftools.yaml"
     threads:
         BCFTOOLS_THREADS
+    params:
+        mpileup_extra=lambda wc: "-A" if wc.ref == "mc_graph" else "",
     resources:
         slurm_partition="long",
         runtime=2880,
@@ -1331,7 +1289,7 @@ rule bcftools_joint_call:
         trap "rm -f $bam_list $tmp_vcf" EXIT
         printf '%s\n' {input.bams} > "$bam_list"
         bcftools mpileup \
-          -A \
+          {params.mpileup_extra} \
           -f {input.fasta} \
           -b "$bam_list" \
           -a AD,DP \

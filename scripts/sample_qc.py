@@ -51,7 +51,7 @@ het = pd.concat(het_frames, ignore_index=True) if het_frames else pd.DataFrame(
     columns=["sample", "ref", "n_het", "n_missing", "mean_depth", "het_rate"]
 )
 het = het.rename(columns={"mean_depth": "het_mean_depth"})
-het = het[["sample", "ref", "n_het", "n_missing", "het_mean_depth", "het_rate"]]
+het = het[["sample", "ref", "n_ref_hom", "n_nonref_hom", "n_het", "n_missing", "het_mean_depth", "het_rate"]]
 
 
 # --- Load F_ROH per (sample, ref) ------------------------------------------
@@ -68,17 +68,17 @@ df = metrics.merge(het, on=["sample", "ref"], how="outer").merge(
 # to the per-sample average depth bcftools stats computed from the surjected
 # BAM-backed VCF.
 df["mean_depth"] = df["mean_depth"].fillna(df["het_mean_depth"])
-df = df.drop(columns=["het_mean_depth"])
 
 # Missingness rate: n_missing / (n_called_or_missing). bcftools stats's PSC
 # block only gives counts, not a denominator; we approximate the denom as
 # (called + missing) per sample.
-total_sites = df["n_het"].fillna(0) + df["n_missing"].fillna(0)
-# A sample with very few variants doesn't have a meaningful missingness rate;
-# guard against div-by-zero.
+total_sites = (df["n_ref_hom"].fillna(0) + df["n_nonref_hom"].fillna(0)
+               + df["n_het"].fillna(0) + df["n_missing"].fillna(0))
 df["missing_rate"] = (df["n_missing"].fillna(0) / total_sites).where(
     total_sites > 0, 0.0
 )
+
+df = df.drop(columns=["het_mean_depth", "n_ref_hom", "n_nonref_hom"])
 
 
 # --- Apply thresholds ------------------------------------------------------

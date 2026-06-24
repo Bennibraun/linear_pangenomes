@@ -91,6 +91,10 @@ rule sv_call_cutesv:
         min_sv_size=SV_MIN_SIZE,
         min_support=SV_MIN_SUPPORT,
         tmpdir=lambda wc: str(SV_OUTDIR / f"read_sv_calls/{wc.sample}_cutesv_temp"),
+        max_cluster_bias_INS=lambda wc: 100 if PLATFORM_MAP.get(wc.sample, "") == "ONT" else 1000,
+        diff_ratio_merging_INS=lambda wc: 0.3 if PLATFORM_MAP.get(wc.sample, "") == "ONT" else 0.9,
+        max_cluster_bias_DEL=lambda wc: 100 if PLATFORM_MAP.get(wc.sample, "") == "ONT" else 1000,
+        diff_ratio_merging_DEL=lambda wc: 0.3 if PLATFORM_MAP.get(wc.sample, "") == "ONT" else 0.5,
     shell:
         r"""
         set -euo pipefail
@@ -103,10 +107,10 @@ rule sv_call_cutesv:
             --threads {threads} \
             --min_size {params.min_sv_size} \
             --min_support {params.min_support} \
-            --max_cluster_bias_INS 100 \
-            --diff_ratio_merging_INS 0.3 \
-            --max_cluster_bias_DEL 100 \
-            --diff_ratio_merging_DEL 0.3 \
+            --max_cluster_bias_INS {params.max_cluster_bias_INS} \
+            --diff_ratio_merging_INS {params.diff_ratio_merging_INS} \
+            --max_cluster_bias_DEL {params.max_cluster_bias_DEL} \
+            --diff_ratio_merging_DEL {params.diff_ratio_merging_DEL} \
             --genotype
         rm -rf {params.tmpdir}
         """

@@ -13,118 +13,18 @@ def _ref_lengths_path(wildcards):
 
 
 # ---------------------------------------------------------------------------
-# Allele Frequency Spectrum
+# Allele Frequency Spectrum (VCF-based for all refs)
 # ---------------------------------------------------------------------------
-# Linear refs: ANGSD folded SFS via realSFS (Jeon et al. 2026 protocol).
-# Genotype-likelihood-based, robust to low coverage. Folded because most
-# pipelines lack a reliable ancestral allele.
-#
-# mc_graph: VCF-allele-frequency-based SFS (the original vcftools approach).
-# ANGSD on surjected BAMs would underestimate diversity due to surjection
-# loss, so we use the post-bcftools VCF, same as the ROH route.
-rule angsd_saf_linear:
-    """Per-site genotype-likelihood allele frequencies on linear refs."""
+rule afs_per_ref:
+    """VCF-based folded SFS from bcftools merged VCF. Uses vcftools --freq2
+    to compute per-site allele frequencies, then bins into the canonical
+    AFS histogram. Uniform method across all refs (including mc_graph)
+    ensures the spectra are directly comparable."""
     input:
-        bams=_bams_for_ref,
-        bais=_bais_for_ref,
-        fasta=lambda wildcards: _ref_fasta(wildcards),
-        fai=lambda wildcards: _ref_fai(wildcards),
-    output:
-        saf_idx=FST_OUTDIR / "saf/{ref}/cohort.saf.idx",
-        saf_pos=FST_OUTDIR / "saf/{ref}/cohort.saf.pos.gz",
-        saf_gz=FST_OUTDIR / "saf/{ref}/cohort.saf.gz",
-    conda:
-        "../envs/roh.yaml"
-    threads: 8
-    wildcard_constraints:
-        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
-    resources:
-        slurm_partition="long",
-        runtime=960,
-        mem_mb=16000,
-        cpus=8,
-    params:
-        prefix=lambda wc: str(FST_OUTDIR / "saf" / wc.ref / "cohort"),
-        min_ind=lambda wc: max(1, int(0.8 * len(SHORT_SAMPLES))),
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p $(dirname {params.prefix})
-        bam_list=$(mktemp -p $(dirname {params.prefix}))
-        trap "rm -f $bam_list" EXIT
-        printf '%s\n' {input.bams} > "$bam_list"
-
-        # -doSaf 1 + -GL 1: per-site allele frequency likelihoods (SAMtools GL
-        # model). -anc {input.fasta} folds the SFS against the reference,
-        # which is what realSFS -fold 1 then collapses. We use the reference
-        # as ancestral because we have no outgroup; realSFS -fold 1 makes
-        # this folded so the choice of "ancestral" is irrelevant.
-        angsd -bam "$bam_list" \
-              -ref {input.fasta} -anc {input.fasta} \
-              -GL 1 -doSaf 1 \
-              -minQ 30 -minMapQ 20 \
-              -minInd {params.min_ind} \
-              -only_proper_pairs 0 -remove_bads 1 -uniqueOnly 1 \
-              -baq 2 -C 50 \
-              -P {threads} \
-              -out {params.prefix}
-        """
-
-
-rule angsd_sfs_linear:
-    """Folded SFS via realSFS — one value per minor-allele-count bin."""
-    input:
-        saf_idx=FST_OUTDIR / "saf/{ref}/cohort.saf.idx",
-    output:
-        sfs=FST_OUTDIR / "saf/{ref}/cohort.folded.sfs",
-    conda:
-        "../envs/roh.yaml"
-    threads: 8
-    wildcard_constraints:
-        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
-    resources:
-        slurm_partition="short",
-        runtime=240,
-        mem_mb=16000,
-        cpus=8,
-    shell:
-        r"""
-        set -euo pipefail
-        # -fold 1: collapse the unfolded SFS into folded (MAC 0..N).
-        realSFS {input.saf_idx} -fold 1 -P {threads} > {output.sfs}
-        """
-
-
-rule afs_per_ref_linear:
-    """Reshape the realSFS output into the canonical AFS bin TSV used by
-    plotting and the variant-count summary."""
-    input:
-        sfs=FST_OUTDIR / "saf/{ref}/cohort.folded.sfs",
+        vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
     output:
         afs=FST_OUTDIR / "afs/{ref}.afs.tsv",
-    conda:
-        "../envs/fst_afs.yaml"
-    params:
-        bins=AFS_BINS,
-        n_samples=len(SHORT_SAMPLES),
-    wildcard_constraints:
-        ref="|".join(_LINEAR_REFS) if _LINEAR_REFS else "x^"
-    resources:
-        slurm_partition="short",
-        runtime=30,
-        mem_mb=2000,
-        cpus=1,
-    script:
-        "../scripts/afs_from_angsd_sfs.py"
-
-
-rule afs_per_ref_mc_graph:
-    """VCF-based SFS for mc_graph (ANGSD on surjected BAMs would be biased)."""
-    input:
-        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
-        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
-    output:
-        afs=FST_OUTDIR / "afs/mc_graph.afs.tsv",
     conda:
         "../envs/fst_afs.yaml"
     params:
@@ -697,6 +597,7 @@ rule roh_per_sample:
         "../envs/roh.yaml"
     params:
         min_roh_length=ROH_MIN_LENGTH,
+        recomb_rate=ROH_RECOMB_RATE,
         bcftools_args=ROH_BCFTOOLS_ARGS,
     resources:
         slurm_partition="short",

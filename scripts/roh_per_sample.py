@@ -9,6 +9,7 @@ out_roh        = Path(snakemake.output.roh)
 out_froh       = Path(snakemake.output.froh)
 
 min_roh_length = snakemake.params.min_roh_length
+recomb_rate    = snakemake.params.recomb_rate
 bcftools_args  = snakemake.params.bcftools_args
 sample         = snakemake.wildcards.sample
 ref            = snakemake.wildcards.ref
@@ -40,7 +41,7 @@ with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".roh", dir=str(
 # tabixed freq table. The BCF holds genotype likelihoods, and --AF-file
 # overrides any in-BCF AF with the cohort frequencies we extracted.
 subprocess.run(
-    f"bcftools roh {bcftools_args} --AF-file {freqs} -G30 "
+    f"bcftools roh {bcftools_args} --AF-file {freqs} -G{recomb_rate} "
     f"-s {sample} {regions_arg} -o {roh_tmp} {bcf}",
     shell=True, check=True,
 )
