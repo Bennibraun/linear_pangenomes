@@ -567,9 +567,7 @@ rule make_cactus_graph:
     output:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
-        vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
-        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl",
-        ri=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.ri"
+        vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz"
     container:
         CACTUS_IMAGE
     threads:
@@ -594,7 +592,6 @@ rule make_cactus_graph:
           {params.jobstore} \
           {input.seqfile} \
           --reference "reference" \
-          --haplo \
           --outDir {params.outdir} \
           --outName "{params.outname}" \
           --vcf \
@@ -606,6 +603,36 @@ rule make_cactus_graph:
         if [ -f "{params.outdir}/{params.outname}.gfa" ] && [ ! -f "{params.outdir}/{params.outname}.gfa.gz" ]; then
             gzip -f "{params.outdir}/{params.outname}.gfa"
         fi
+        """
+
+rule make_haplo_index:
+    """Build the haplotype-sampling indexes (.dist, .ri, .hapl) used by
+    `vg giraffe -H`. These are normally produced by `cactus-pangenome --haplo`,
+    but the cactus container's `vg haplotypes` aborts with "cannot run N threads
+    in parallel on this system" on some nodes. We reproduce the exact index
+    sequence here in the standalone VG_IMAGE, running `vg haplotypes` single-
+    threaded to avoid that parallelism check. The .gbz is unchanged from cactus."""
+    input:
+        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
+    output:
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        ri=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.ri",
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
+    container:
+        VG_IMAGE
+    threads:
+        CACTUS_MAX_CORES
+    resources:
+        slurm_partition="highmem",
+        runtime=480,
+        mem_mb=32000,
+        cpus=CACTUS_MAX_CORES
+    shell:
+        r"""
+        set -euo pipefail
+        vg index -t {threads} -j {output.dist} {input.gbz} --no-nested-distance
+        vg gbwt -p --num-threads {threads} -r {output.ri} -Z {input.gbz}
+        vg haplotypes -v 2 -t 1 -H {output.hapl} -d {output.dist} -r {output.ri} {input.gbz}
         """
 
 rule bwa_index:
