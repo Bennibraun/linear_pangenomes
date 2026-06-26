@@ -101,6 +101,12 @@ CACTUS_OUTNAME = CACTUS_CFG.get("outname", "cactus_graph")
 CACTUS_MAX_CORES = CACTUS_CFG.get("max_cores", 8)
 CACTUS_REF_CONTIGS = CACTUS_CFG.get("ref_contigs", "")
 CACTUS_EXTRA_ARGS = CACTUS_CFG.get("extra_args", "")
+# Reference sequence names to drop from the graph reference only (not the linear
+# pipeline). Used to exclude circular/organellar contigs (e.g. the mitochondrion)
+# that break `vg haplotypes` haplotype sampling with "top-level chain is a loop".
+CACTUS_EXCLUDE_REF_SEQS = CACTUS_CFG.get("exclude_ref_seqs", []) or []
+if isinstance(CACTUS_EXCLUDE_REF_SEQS, str):
+    CACTUS_EXCLUDE_REF_SEQS = CACTUS_EXCLUDE_REF_SEQS.split()
 
 VG_IMAGE = "docker://quay.io/vgteam/vg:v1.74.0"
 
@@ -540,12 +546,49 @@ rule sv_build_augmented_reference:
 CACTUS_STAGED_REF = Path("results") / "cactus_work" / "reference.fasta"
 
 rule stage_cactus_reference:
+    """Stage the reference FASTA used to build the pangenome graph.
+
+    This is the ONLY place the graph reference diverges from the linear pipeline:
+    the linear tools keep using ALIGN_CONSPEC (the full reference) while the graph
+    uses this filtered copy. Sequences named in cactus.exclude_ref_seqs are dropped
+    here so circular/organellar contigs (e.g. the mitochondrion NC_001566.1) don't
+    end up in the graph, where they form top-level chain loops that break
+    `vg haplotypes` haplotype sampling. With no exclusions this is a plain copy."""
     input:
         ALIGN_CONSPEC
     output:
         CACTUS_STAGED_REF
+    params:
+        exclude=" ".join(CACTUS_EXCLUDE_REF_SEQS)
+    container:
+        VG_IMAGE
     shell:
-        "cp {input} {output}"
+        r"""
+        set -euo pipefail
+        if [ -z "{params.exclude}" ]; then
+            cp {input} {output}
+        else
+            # Names actually present in the FASTA (first token after '>').
+            present=$(grep '^>' {input} | sed 's/^>//; s/[[:space:]].*//')
+            # Fail loudly if any requested exclusion isn't in the FASTA, rather
+            # than silently producing an unfiltered graph reference.
+            for s in {params.exclude}; do
+                if ! printf '%s\n' "$present" | grep -qxF "$s"; then
+                    echo "ERROR: cactus.exclude_ref_seqs name '$s' not found in {input}" >&2
+                    echo "Available sequence names:" >&2
+                    printf '%s\n' "$present" >&2
+                    exit 1
+                fi
+            done
+            # Build the keep-list (everything not excluded), preserving FASTA order.
+            keep=$(printf '%s\n' "$present" | grep -vxF -f <(printf '%s\n' {params.exclude}) || true)
+            if [ -z "$keep" ]; then
+                echo "ERROR: cactus.exclude_ref_seqs would remove every sequence from {input}" >&2
+                exit 1
+            fi
+            samtools faidx {input} $keep > {output}
+        fi
+        """
 
 rule generate_cactus_seqfile:
     input:
@@ -609,9 +652,15 @@ rule make_haplo_index:
     """Build the haplotype-sampling indexes (.dist, .ri, .hapl) used by
     `vg giraffe -H`. These are normally produced by `cactus-pangenome --haplo`,
     but the cactus container's `vg haplotypes` aborts with "cannot run N threads
-    in parallel on this system" on some nodes. We reproduce the exact index
-    sequence here in the standalone VG_IMAGE, running `vg haplotypes` single-
-    threaded to avoid that parallelism check. The .gbz is unchanged from cactus."""
+    in parallel on this system" on some nodes. We reproduce the index sequence
+    here in the standalone VG_IMAGE, running `vg haplotypes` single-threaded to
+    avoid that parallelism check. The .gbz is unchanged from cactus.
+
+    The distance index is built with `-P "reference"` so the reference sample is
+    used as the backbone when orienting top-level chains. Without it, vg
+    haplotypes fails with "top-level chain N is a loop; haplotype sampling cannot
+    be used with this graph". "reference" matches `--reference` in
+    make_cactus_graph (the PanSN sample name of the reference assembly)."""
     input:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
@@ -630,7 +679,7 @@ rule make_haplo_index:
     shell:
         r"""
         set -euo pipefail
-        vg index -t {threads} -j {output.dist} {input.gbz} --no-nested-distance
+        vg index -t {threads} -j {output.dist} -P "reference" {input.gbz} --no-nested-distance
         vg gbwt -p --num-threads {threads} -r {output.ri} -Z {input.gbz}
         vg haplotypes -v 2 -t 1 -H {output.hapl} -d {output.dist} -r {output.ri} {input.gbz}
         """

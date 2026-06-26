@@ -53,6 +53,12 @@ cactus:
   max_cores: 8
   ref_contigs: ""
   extra_args: ""
+  # Reference sequence names to exclude from the pangenome graph only (the linear
+  # alignment/variant pipeline still uses the full reference). Use this to drop
+  # circular/organellar contigs that break vg haplotypes haplotype sampling with
+  # "top-level chain is a loop". Accepts any number of names matching FASTA headers.
+  # Set to [] to keep every sequence.
+  exclude_ref_seqs: ["NC_001566.1"]   # Apis mellifera mitochondrion
 
 align_wgs:
   outdir: "results/wgs_alignments"
