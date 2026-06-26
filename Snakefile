@@ -660,13 +660,23 @@ rule make_haplo_index:
     used as the backbone when orienting top-level chains. Without it, vg
     haplotypes fails with "top-level chain N is a loop; haplotype sampling cannot
     be used with this graph". "reference" matches `--reference` in
-    make_cactus_graph (the PanSN sample name of the reference assembly)."""
+    make_cactus_graph (the PanSN sample name of the reference assembly).
+
+    We also rebuild the short-read minimizer/zipcodes index here. `vg giraffe`
+    auto-discovers sibling indexes by name (.dist, .shortread.withzip.min,
+    .shortread.zipcodes) and refuses to run if .dist is newer than the minimizer
+    index derived from it. Since we regenerate .dist, the minimizer index must be
+    rebuilt from the same .dist or giraffe aborts with a staleness error. Building
+    them together here keeps the whole giraffe index set mutually consistent with
+    the (mito-excluded) graph."""
     input:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
         dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
         ri=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.ri",
-        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl",
+        min=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
     container:
         VG_IMAGE
     threads:
@@ -682,6 +692,8 @@ rule make_haplo_index:
         vg index -t {threads} -j {output.dist} -P "reference" {input.gbz} --no-nested-distance
         vg gbwt -p --num-threads {threads} -r {output.ri} -Z {input.gbz}
         vg haplotypes -v 2 -t 1 -H {output.hapl} -d {output.dist} -r {output.ri} {input.gbz}
+        vg minimizer -t {threads} -d {output.dist} \
+          -o {output.min} -z {output.zipcodes} {input.gbz}
         """
 
 rule bwa_index:
@@ -857,7 +869,10 @@ rule giraffe_align:
         fq1=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R1.ds.fastq.gz"),
         fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         gbz=ALIGN_CACTUS_GBZ,
-        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl"
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl",
+        dist=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.dist",
+        min=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
+        zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
     output:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
     container:
