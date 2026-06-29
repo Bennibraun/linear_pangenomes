@@ -667,8 +667,12 @@ rule make_haplo_index:
     .shortread.zipcodes) and refuses to run if .dist is newer than the minimizer
     index derived from it. Since we regenerate .dist, the minimizer index must be
     rebuilt from the same .dist or giraffe aborts with a staleness error. Building
-    them together here keeps the whole giraffe index set mutually consistent with
-    the (mito-excluded) graph."""
+    them together here keeps the whole giraffe index set mutually consistent.
+
+    Note the .dist is a FULL distance index (no --no-nested-distance). vg
+    haplotypes alone would tolerate the reduced top-level-only index that cactus
+    uses, but vg minimizer needs nested-snarl distances, so we build one full
+    index and share it across both steps."""
     input:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"
     output:
@@ -689,7 +693,13 @@ rule make_haplo_index:
     shell:
         r"""
         set -euo pipefail
-        vg index -t {threads} -j {output.dist} -P "reference" {input.gbz} --no-nested-distance
+        # Full distance index (NO --no-nested-distance). vg haplotypes only needs
+        # top-level chain distances, but vg minimizer's zipcode/payload caching
+        # requires nested-snarl distances ("is_regular_snarl requires distances in
+        # the distance index"). A full index satisfies both, so we build one .dist
+        # and share it; the reduced (--no-nested-distance) index would crash vg
+        # minimizer.
+        vg index -t {threads} -j {output.dist} -P "reference" {input.gbz}
         vg gbwt -p --num-threads {threads} -r {output.ri} -Z {input.gbz}
         vg haplotypes -v 2 -t 1 -H {output.hapl} -d {output.dist} -r {output.ri} {input.gbz}
         vg minimizer -t {threads} -d {output.dist} \
