@@ -144,6 +144,8 @@ rule plot_allelic_balance:
         "../scripts/plot_allelic_balance.py"
 
 
+# ROH removed (see note near ROH_CFG in the main Snakefile).
+_PLOT_ROH_DISABLED = r'''
 rule plot_roh:
     input:
         summary=ROH_OUTDIR / "f_roh_summary.tsv",
@@ -162,6 +164,7 @@ rule plot_roh:
         cpus=1,
     script:
         "../scripts/plot_roh.py"
+'''
 
 
 rule plot_coverage_qc:

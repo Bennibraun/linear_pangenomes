@@ -1,7 +1,7 @@
 """Per-sample QC table.
 
 Aggregates per-sample metrics across all references into a single TSV:
-  sample, ref, mean_depth, mapping_rate, n_het, n_missing, het_rate, f_roh,
+  sample, ref, mean_depth, mapping_rate, n_het, n_missing, het_rate,
   qc_status, qc_flags
 
 Each metric is checked against a configurable threshold from
@@ -21,7 +21,6 @@ import pandas as pd
 
 metrics_path = snakemake.input.metrics
 het_paths = list(snakemake.input.heterozygosity)
-froh_path = snakemake.input.froh_summary
 out_path = Path(snakemake.output.qc)
 
 min_depth = float(snakemake.params.min_depth)
@@ -54,15 +53,8 @@ het = het.rename(columns={"mean_depth": "het_mean_depth"})
 het = het[["sample", "ref", "n_ref_hom", "n_nonref_hom", "n_het", "n_missing", "het_mean_depth", "het_rate"]]
 
 
-# --- Load F_ROH per (sample, ref) ------------------------------------------
-froh = pd.read_csv(froh_path, sep="\t")
-froh = froh[["sample", "ref", "f_roh"]]
-
-
 # --- Merge -----------------------------------------------------------------
-df = metrics.merge(het, on=["sample", "ref"], how="outer").merge(
-    froh, on=["sample", "ref"], how="outer"
-)
+df = metrics.merge(het, on=["sample", "ref"], how="outer")
 
 # For mc_graph mean_depth is NA in alignment_metrics (GAM-derived); fall back
 # to the per-sample average depth bcftools stats computed from the surjected
@@ -105,7 +97,7 @@ df[["qc_status", "qc_flags"]] = df.apply(
 # --- Order columns and write ------------------------------------------------
 cols = [
     "sample", "ref", "mean_depth", "mapping_rate",
-    "n_het", "n_missing", "het_rate", "missing_rate", "f_roh",
+    "n_het", "n_missing", "het_rate", "missing_rate",
     "qc_status", "qc_flags",
 ]
 df = df[cols].sort_values(["sample", "ref"])
