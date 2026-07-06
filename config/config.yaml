@@ -76,9 +76,9 @@ align_metrics:
 variant_calling:
   outdir: "results/variants"
   bcftools:
-    threads: 4
+    threads: 16
   vg:
-    threads: 4
+    threads: 8
     augment_min_cov: 3  # minimum read support to add a variant during cohort augmentation (vg augment -m)
 
 fst_afs:

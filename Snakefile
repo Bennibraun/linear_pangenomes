@@ -128,7 +128,7 @@ VC_CFG = config["variant_calling"]
 BCFTOOLS_CFG = VC_CFG["bcftools"]
 VG_CFG = VC_CFG["vg"]
 VC_OUTDIR = Path(VC_CFG.get("outdir", "results/variants"))
-BCFTOOLS_THREADS = BCFTOOLS_CFG.get("threads", 4)
+BCFTOOLS_THREADS = BCFTOOLS_CFG.get("threads", 16)
 VG_GBZ = VG_CFG.get("graph_gbz", str(CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz"))
 VG_THREADS = VG_CFG.get("threads", 4)
 
