@@ -2,7 +2,7 @@
 
 Emits one row per reference with:
   ref, length_bp, mean_mapping_rate, mean_mapping_qual, n_snps,
-  n_snps_filtered, n_svs (from graph SV pipeline), mean_pi, mean_f_roh,
+  n_snps_filtered, n_svs (from graph SV pipeline), mean_pi,
   size_vs_conspec_pct
 
 Designed for direct comparison to Jeon Table 1.
@@ -19,9 +19,8 @@ refs = list(snakemake.params.refs)
 fastas = {r: f for r, f in zip(refs, snakemake.params.fastas)}
 fais = {r: f for r, f in zip(refs, snakemake.params.fais)}
 vcfs = {r: f for r, f in zip(refs, snakemake.input.vcfs)}
-sv_vcfs = list(snakemake.input.sv_vcfs)  # per-sample mc_graph SV VCFs
+sv_vcfs = list(getattr(snakemake.input, "sv_vcfs", []))  # per-sample mc_graph SV VCFs (graph only)
 metrics_path = snakemake.input.metrics
-froh_path = snakemake.input.froh
 pi_paths = {r: f for r, f in zip(refs, snakemake.input.pi)}
 conspec_ref = snakemake.params.conspec_ref
 
@@ -100,12 +99,6 @@ def mean_pi(pi_path):
 pi_summary = {r: mean_pi(pi_paths[r]) for r in refs}
 
 
-# --- Mean F_ROH per ref ----------------------------------------------------
-froh = pd.read_csv(froh_path, sep="\t")
-froh["f_roh"] = pd.to_numeric(froh["f_roh"], errors="coerce")
-froh_summary = froh.groupby("ref")["f_roh"].mean().to_dict()
-
-
 # --- Assemble --------------------------------------------------------------
 conspec_len = lengths.get(conspec_ref, 0)
 rows = []
@@ -129,7 +122,6 @@ for r in refs:
             "n_snps_filtered": snp_counts[r]["n_snps_filtered"],
             "n_svs": n_svs if r == "mc_graph" else 0,
             "mean_pi": pi_summary[r],
-            "mean_f_roh": froh_summary.get(r, float("nan")),
         }
     )
 

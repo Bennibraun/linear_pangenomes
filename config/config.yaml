@@ -1,6 +1,19 @@
 # Linear Pangenome Pipeline Configuration
 
 # ============================================================================
+# OPTIONAL STAGES (default off)
+# ============================================================================
+# include_graph: build and use the Minigraph-Cactus pangenome graph — cactus
+#   build, haplotype-sampling index, giraffe alignment, surjection, vg SV calls,
+#   and mc_graph as a reference in the popgen/plot rules. SV calling and the
+#   augmented reference are independent and always run.
+# include_assembly_align: short-reads-to-assembly QC metrics + plot. (Does NOT
+#   affect the assemblies themselves or the assembly-to-reference alignment that
+#   SV calling depends on.)
+include_graph: false
+include_assembly_align: false
+
+# ============================================================================
 # INPUT DATA
 # ============================================================================
 inputs:
@@ -108,18 +121,17 @@ pcangsd:
 plot:
   outdir: "results/plots"
 
-roh:
-  outdir: "results/roh"
-  genome_lengths: {}
-  min_roh_length: 100000  # 100 kb standard cutoff (Narasimhan 2016, Kardos et al.)
-                           # Canonical chromosomes are auto-derived from the conspec .fai
-                           # so SV_* contigs are excluded without manual configuration.
-  recomb_rate: 30  # recombination rate in cM/Mb for bcftools roh -G
-                    # Set to your organism's known rate. Examples:
-                    #   honeybee (Apis mellifera): ~22
-                    #   Drosophila melanogaster:   ~2.5
-                    #   human:                     ~1.2
-  bcftools_args: ""
+# ROH removed: augref ROH was identical to conspec by construction (SV_* contigs
+# are excluded from ROH calling), so the stage added no information and was cut.
+# roh:
+#   outdir: "results/roh"
+#   genome_lengths: {}
+#   min_roh_length: 100000  # 100 kb standard cutoff (Narasimhan 2016, Kardos et al.)
+#   recomb_rate: 30  # recombination rate in cM/Mb for bcftools roh -G
+#                     #   honeybee (Apis mellifera): ~22
+#                     #   Drosophila melanogaster:   ~2.5
+#                     #   human:                     ~1.2
+#   bcftools_args: ""
 
 relatedness:
   outdir: "results/relatedness"

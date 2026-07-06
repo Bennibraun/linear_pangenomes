@@ -6,10 +6,11 @@
 # main Snakefile and are available via Snakemake's include mechanism.
 
 
-def _ref_lengths_path(wildcards):
-    if wildcards.ref in ROH_GENOME_LENGTHS:
-        return ROH_GENOME_LENGTHS[wildcards.ref]
-    return str(ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv")
+# ROH removed (see note near ROH_CFG in the main Snakefile).
+# def _ref_lengths_path(wildcards):
+#     if wildcards.ref in ROH_GENOME_LENGTHS:
+#         return ROH_GENOME_LENGTHS[wildcards.ref]
+#     return str(ROH_OUTDIR / "lengths" / f"{wildcards.ref}.lengths.tsv")
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +152,10 @@ rule per_ref_summary:
             VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
             ref=REFERENCE_NAMES,
         ),
-        sv_vcfs=expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
+        # Graph SV VCFs only exist when the graph is enabled; when off this is
+        # empty and the script reports n_svs=0 (mc_graph isn't a ref anyway).
+        sv_vcfs=expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES) if INCLUDE_GRAPH else [],
         metrics=METRICS_OUTDIR / "alignment_metrics.tsv",
-        froh=ROH_OUTDIR / "f_roh_summary.tsv",
         pi=expand(PI_OUTDIR / "{ref}.windowed.pi", ref=REFERENCE_NAMES),
     output:
         summary=QC_OUTDIR / "per_ref_summary.tsv",
@@ -187,7 +189,6 @@ rule sample_qc_summary:
             HET_OUTDIR / "{ref}/per_sample_heterozygosity.tsv",
             ref=REFERENCE_NAMES,
         ),
-        froh_summary=ROH_OUTDIR / "f_roh_summary.tsv",
     output:
         qc=QC_OUTDIR / "sample_qc.tsv",
     conda:
@@ -445,8 +446,15 @@ rule allelic_balance_summary:
 
 
 # ---------------------------------------------------------------------------
-# Runs of homozygosity (F_ROH)
+# Runs of homozygosity (F_ROH) — REMOVED
 # ---------------------------------------------------------------------------
+# ROH was cut entirely: with SV_* accessory contigs excluded from ROH calling,
+# augref ROH is identical to conspec by construction (the added sequence is
+# never assessed), so augref added no information and the whole stage was
+# redundant. The rules below are disabled (wrapped in a module-level string so
+# Snakemake never registers them). To revive, unwrap this block and restore the
+# config vars / target lines / summary-table columns noted in the main Snakefile.
+_ROH_DISABLED = r'''
 rule ref_lengths:
     input:
         fasta=lambda wildcards: _ref_fasta(wildcards),
@@ -557,6 +565,7 @@ rule roh_summary:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("\n".join(rows) + "\n")
+'''
 
 
 # ---------------------------------------------------------------------------
@@ -661,7 +670,11 @@ rule pcangsd:
               --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
-        awk '{{print $2}}' "$tmpdir/plink.fam" > {output.samples}
+        # Sample names for the PCA plot. plink's VCF import writes the IID as
+        # "SAMPLE_SAMPLE" (doubled) even with --const-fid, which then fails to
+        # match the manifest sample_ids downstream. bcftools gives the clean VCF
+        # sample names in the same order plink uses, so take them from the VCF.
+        bcftools query -l {input.vcf} > {output.samples}
         # Save all BIM coords; filter to pcangsd-kept sites after --sites-save.
         awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > "$tmpdir/all_coords.tsv"
 

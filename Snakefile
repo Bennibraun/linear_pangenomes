@@ -55,14 +55,30 @@ ALIGN_AUGREF = REFS_NESTED["augref"]["fasta"]
 ALIGN_CONSPEC = REFS_NESTED["conspec"]["fasta"]
 ALIGN_HETSPEC = REFS_NESTED["hetspec"]["fasta"]
 
+# ============================================================================
+# Optional-stage toggles (default OFF)
+# ============================================================================
+# INCLUDE_GRAPH gates the entire Minigraph-Cactus graph path: the cactus build,
+# haplotype-sampling index, giraffe alignment, surjection, vg SV calls, and
+# mc_graph as a reference in the popgen/plot rules. When off, mc_graph is not
+# added to REFERENCE_NAMES, so every {ref}-wildcarded rule stops expanding it
+# automatically. SV calling / augref are independent and stay on.
+# INCLUDE_ASSEMBLY_ALIGN gates the short-reads-to-assembly QC metrics + plot
+# (NOT the assembly-to-reference PAF that SV calling needs, and NOT the
+# assemblies themselves, which SV/augref/graph depend on).
+INCLUDE_GRAPH = config.get("include_graph", False)
+INCLUDE_ASSEMBLY_ALIGN = config.get("include_assembly_align", False)
+
 # mc_graph is the Minigraph-Cactus pangenome reference. SNPs come from
 # bcftools on surjected BAMs (conspec coordinates), written to the same
 # bcftools/{ref}/combined/merged.vcf.gz path as the linear refs so
-# {ref}-wildcarded popgen rules (FST, AFS, π, allelic balance, ROH,
-# PCAngsd) pick it up automatically. SVs are called separately via vg call
-# on the cohort-augmented graph and stored under sv/vg/ for benchmarking.
-REFS_NESTED["mc_graph"] = dict(REFS_NESTED["conspec"])
-REFERENCE_NAMES = REFERENCE_NAMES + ["mc_graph"]
+# {ref}-wildcarded popgen rules (FST, AFS, π, allelic balance, PCAngsd) pick it
+# up automatically. SVs are called separately via vg call on the cohort-
+# augmented graph and stored under sv/vg/ for benchmarking. Only added when the
+# graph is enabled.
+if INCLUDE_GRAPH:
+    REFS_NESTED["mc_graph"] = dict(REFS_NESTED["conspec"])
+    REFERENCE_NAMES = REFERENCE_NAMES + ["mc_graph"]
 
 def get_ref_fasta(name):
     return REFS_NESTED[name]["fasta"]
@@ -154,12 +170,19 @@ AB_OUTDIR = Path(AB_CFG.get("outdir", "results/allelic_balance"))
 AB_BINS = AB_CFG.get("bins", [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
 AB_MIN_DEPTH = AB_CFG.get("min_depth", 10)
 
-ROH_CFG = config["roh"]
-ROH_OUTDIR = Path(ROH_CFG.get("outdir", "results/roh"))
-ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
-ROH_MIN_LENGTH = ROH_CFG.get("min_roh_length", 100000)
-ROH_RECOMB_RATE = ROH_CFG.get("recomb_rate", 30)
-ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
+# ROH (runs of homozygosity) removed: with SV_* contigs excluded from ROH
+# calling, augref ROH is identical to conspec by construction (no added
+# information), so the whole ROH stage was cut. Rules, targets, config, and the
+# f_roh columns in the summary tables are all disabled. To revive, uncomment
+# this block, the ROH rules in rules/popgen.smk + rules/plotting.smk, the target
+# lines below, the roh: config block, and restore the froh inputs/columns in
+# scripts/per_ref_summary.py and scripts/sample_qc.py.
+# ROH_CFG = config["roh"]
+# ROH_OUTDIR = Path(ROH_CFG.get("outdir", "results/roh"))
+# ROH_GENOME_LENGTHS = ROH_CFG.get("genome_lengths", {})
+# ROH_MIN_LENGTH = ROH_CFG.get("min_roh_length", 100000)
+# ROH_RECOMB_RATE = ROH_CFG.get("recomb_rate", 30)
+# ROH_BCFTOOLS_ARGS = ROH_CFG.get("bcftools_args", "")
 
 RELATEDNESS_CFG = config.get("relatedness", {})
 RELATEDNESS_OUTDIR = Path(RELATEDNESS_CFG.get("outdir", "results/relatedness"))
@@ -184,6 +207,9 @@ _F1_COMPATIBLE = _F1_CFG.get(
     "compatible_refs",
     [r for r in REFERENCE_NAMES if r in ("conspec", "augref", "mc_graph")],
 )
+# Drop any refs that aren't active (e.g. mc_graph when the graph is disabled)
+# so an explicit compatible_refs list can't request unbuildable outputs.
+_F1_COMPATIBLE = [r for r in _F1_COMPATIBLE if r in REFERENCE_NAMES]
 F1_OUTDIR = Path(_F1_CFG.get("outdir", "results/f1_concordance"))
 F1_PAIRS = [
     (a, b)
@@ -268,37 +294,46 @@ rule all:
         SV_OUTDIR / "pan_sample_catalog/novel_sequence_summary.tsv",
         SV_OUTDIR / "pan_sample_catalog/sv_sharing_summary.tsv",
         SV_OUTDIR / "augref/augmented_reference.fasta",
-        # Cactus graph
-        CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
-        CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
-        CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
-        # WGS alignment (short reads only)
+        # Cactus graph (optional; INCLUDE_GRAPH)
+        *([
+            CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
+            CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
+            CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz",
+        ] if INCLUDE_GRAPH else []),
+        # WGS alignment to linear references (short reads only)
         expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.conspec.bam.bai", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam", sample=SHORT_SAMPLES),
         expand(ALIGN_OUTDIR / "{sample}/{sample}.hetspec.bam.bai", sample=SHORT_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam", sample=SHORT_SAMPLES),
-        expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai", sample=SHORT_SAMPLES),
-        # Alignment metrics
+        # Graph alignment: giraffe GAM + surjected mc_graph BAM (optional)
+        *([
+            *expand(ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam", sample=SHORT_SAMPLES),
+            *expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam", sample=SHORT_SAMPLES),
+            *expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai", sample=SHORT_SAMPLES),
+            *expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
+            *expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES),
+        ] if INCLUDE_GRAPH else []),
+        # Alignment metrics (linear refs)
         expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv", sample=SHORT_SAMPLES, ref=_BCFTOOLS_REFS),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES),
         METRICS_OUTDIR / "alignment_metrics.tsv",
-        # Short reads → individual assemblies (one row per short × long pair)
-        expand(METRICS_OUTDIR / "short_to_assembly/{short_sample}__{long_sample}.metrics.tsv",
-               short_sample=SHORT_SAMPLES, long_sample=LONG_SAMPLES),
-        METRICS_OUTDIR / "short_to_assembly_metrics.tsv",
+        # Short reads → individual assemblies QC (optional; INCLUDE_ASSEMBLY_ALIGN)
+        *([
+            *expand(METRICS_OUTDIR / "short_to_assembly/{short_sample}__{long_sample}.metrics.tsv",
+                    short_sample=SHORT_SAMPLES, long_sample=LONG_SAMPLES),
+            METRICS_OUTDIR / "short_to_assembly_metrics.tsv",
+        ] if INCLUDE_ASSEMBLY_ALIGN else []),
         # SNP calling (bcftools on BAMs for all refs including mc_graph)
         expand(VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "bcftools/{ref}/per_sample/{sample}.vcf.gz.tbi", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz", ref=REFERENCE_NAMES),
         expand(VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi", ref=REFERENCE_NAMES),
-        # SV calling (vg call on augmented graph, for benchmarking)
-        expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
-        expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
+        # SV calling (vg call on augmented graph, for benchmarking; optional)
+        *([
+            *expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES),
+            *expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz.tbi", sample=SHORT_SAMPLES),
+        ] if INCLUDE_GRAPH else []),
         # Population genetics
         expand(FST_OUTDIR / "afs/{ref}.afs.tsv", ref=REFERENCE_NAMES),
         [FST_OUTDIR / f"fst/{ref}/{pop1}_vs_{pop2}.weir.fst" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
@@ -307,9 +342,10 @@ rule all:
         expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         expand(AB_OUTDIR / "{ref}/{sample}.allelic_balance.raw.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
         AB_OUTDIR / "allelic_balance_summary.tsv",
-        expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
-        expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
-        ROH_OUTDIR / "f_roh_summary.tsv",
+        # ROH removed (see note near ROH_CFG above):
+        # expand(ROH_OUTDIR / "{ref}/{sample}.roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        # expand(ROH_OUTDIR / "{ref}/{sample}.f_roh.tsv", ref=REFERENCE_NAMES, sample=SHORT_SAMPLES),
+        # ROH_OUTDIR / "f_roh_summary.tsv",
         # PCAngsd PCA + selection scan
         expand(PCANGSD_OUTDIR / "{ref}/pcangsd.cov", ref=REFERENCE_NAMES),
         expand(PCANGSD_OUTDIR / "{ref}/fst_outliers.tsv", ref=REFERENCE_NAMES),
@@ -321,9 +357,9 @@ rule all:
         expand(PLOT_OUTDIR / "pi/{ref}_pi.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "tajimas_d/{ref}_tajimas_d.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "allelic_balance/{ref}_allelic_balance.png", ref=REFERENCE_NAMES),
-        expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES),
+        # ROH removed: expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES),
         PLOT_OUTDIR / "alignment/alignment_rates.png",
-        PLOT_OUTDIR / "alignment/assembly_alignment.png",
+        *([PLOT_OUTDIR / "alignment/assembly_alignment.png"] if INCLUDE_ASSEMBLY_ALIGN else []),
         PLOT_OUTDIR / "qc/coverage_qc.png",
         # Per-sample heterozygosity
         expand(HET_OUTDIR / "{ref}/per_sample_heterozygosity.tsv", ref=REFERENCE_NAMES),
@@ -1221,8 +1257,11 @@ rule align_metrics_summary:
     input:
         expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv",
                sample=SHORT_SAMPLES, ref=_BCFTOOLS_REFS),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
-        expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES)
+        # Graph alignment metrics only when the graph is enabled.
+        *([
+            *expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
+            *expand(METRICS_OUTDIR / "{sample}/{sample}.mc_graph.metrics.tsv", sample=SHORT_SAMPLES),
+        ] if INCLUDE_GRAPH else []),
     output:
         metrics=METRICS_OUTDIR / "alignment_metrics.tsv"
     conda:
