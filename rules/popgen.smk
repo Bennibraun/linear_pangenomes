@@ -337,6 +337,12 @@ rule relatedness_summary:
 # Nucleotide diversity (π) in sliding windows
 # ---------------------------------------------------------------------------
 rule pi_per_ref:
+    """Per-population windowed nucleotide diversity. Runs vcftools --window-pi
+    once per population (via --keep) and concatenates into one long-format table
+    with a POP column. A single genome-wide file per ref is preserved (same
+    path) for backward compatibility; per-population comparison happens in the
+    plot. Pooling all populations would distort π/Tajima's D via structure, so
+    diversity is measured within each population."""
     input:
         vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
         tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
@@ -346,27 +352,26 @@ rule pi_per_ref:
         "../envs/pi.yaml"
     params:
         window_size=PI_WINDOW_SIZE,
-        window_step=PI_WINDOW_STEP
+        window_step=PI_WINDOW_STEP,
+        pop_samples=POP_SAMPLES,
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
         cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {PI_OUTDIR}
-        vcftools --gzvcf {input.vcf} \
-          --window-pi {params.window_size} \
-          --window-pi-step {params.window_step} \
-          --out {PI_OUTDIR}/{wildcards.ref} > /dev/null
-        """
+    script:
+        "../scripts/compute_pi_per_pop.py"
 
 
 # ---------------------------------------------------------------------------
 # Tajima's D in non-overlapping windows (vcftools)
 # ---------------------------------------------------------------------------
 rule tajimas_d_per_ref:
+    """Per-population Tajima's D in non-overlapping windows. Runs vcftools
+    --TajimaD once per population (via --keep) and concatenates into one
+    long-format table with a POP column. Per-population is essential here:
+    pooling populations inflates Tajima's D through structure and masks the
+    demographic signal we want to read per group."""
     input:
         vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
         tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi"
@@ -376,20 +381,15 @@ rule tajimas_d_per_ref:
         "../envs/pi.yaml"
     params:
         # vcftools --TajimaD only takes a single non-overlapping window size.
-        window_size=PI_WINDOW_SIZE
+        window_size=PI_WINDOW_SIZE,
+        pop_samples=POP_SAMPLES,
     resources:
         slurm_partition="short",
         runtime=120,
         mem_mb=4000,
         cpus=1
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p {PI_OUTDIR}
-        vcftools --gzvcf {input.vcf} \
-          --TajimaD {params.window_size} \
-          --out {PI_OUTDIR}/{wildcards.ref} > /dev/null
-        """
+    script:
+        "../scripts/compute_tajimas_d_per_pop.py"
 
 
 # ---------------------------------------------------------------------------
@@ -626,10 +626,17 @@ rule ld_prune_vcf:
             --out "$outdir/pruned_tmp"
 
         bgzip -f "$outdir/pruned_tmp.vcf"
-        mv "$outdir/pruned_tmp.vcf.gz" {output.vcf}
+
+        # plink --double-id writes VCF sample names as FID_IID = "SAMPLE_SAMPLE".
+        # Restore the original (clean) sample names from the input VCF, in the
+        # same order, so downstream (pcangsd samples.txt, PCA population labels)
+        # matches the manifest sample_ids.
+        bcftools query -l {input.vcf} > "$outdir/orig_samples.txt"
+        bcftools reheader -s "$outdir/orig_samples.txt" \
+            -o {output.vcf} "$outdir/pruned_tmp.vcf.gz"
         tabix -p vcf {output.vcf}
 
-        rm -f "$dedup_vcf" "$dedup_vcf.tbi"
+        rm -f "$dedup_vcf" "$dedup_vcf.tbi" "$outdir/pruned_tmp.vcf.gz" "$outdir/orig_samples.txt"
         rm -f "$outdir/prune_tmp".* "$outdir/pruned_tmp.log" "$outdir/pruned_tmp.nosex"
         """
 
@@ -670,11 +677,14 @@ rule pcangsd:
               --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
-        # Sample names for the PCA plot. plink's VCF import writes the IID as
-        # "SAMPLE_SAMPLE" (doubled) even with --const-fid, which then fails to
-        # match the manifest sample_ids downstream. bcftools gives the clean VCF
-        # sample names in the same order plink uses, so take them from the VCF.
-        bcftools query -l {input.vcf} > {output.samples}
+        # Sample names for the PCA plot. Take them from the VCF (bcftools gives
+        # them in the same order plink uses). Older LD-pruned VCFs carry plink's
+        # doubled "SAMPLE_SAMPLE" names (from --double-id upstream); collapse any
+        # "NAME_NAME" back to "NAME" so labels match the manifest sample_ids.
+        # (New ld_prune_vcf runs already reheader to clean names, so this is a
+        # no-op there.)
+        bcftools query -l {input.vcf} \
+            | sed -E 's/^(.*)_\1$/\1/' > {output.samples}
         # Save all BIM coords; filter to pcangsd-kept sites after --sites-save.
         awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > "$tmpdir/all_coords.tsv"
 

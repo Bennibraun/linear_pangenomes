@@ -352,10 +352,13 @@ rule all:
         # Plots
         expand(PLOT_OUTDIR / "pca/{ref}_pca.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "selection/{ref}_selection_scan.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "selection/{ref}_top_outliers.tsv", ref=REFERENCE_NAMES),
         [PLOT_OUTDIR / f"fst/{ref}_{pop1}_vs_{pop2}_fst.png" for ref in REFERENCE_NAMES for (pop1, pop2) in POP_PAIR_TUPLES],
+        expand(PLOT_OUTDIR / "fst/{ref}_fst_heatmap.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "afs/{ref}_afs.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "pi/{ref}_pi.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "tajimas_d/{ref}_tajimas_d.png", ref=REFERENCE_NAMES),
+        expand(PLOT_OUTDIR / "diversity/{ref}_pi_vs_tajd.png", ref=REFERENCE_NAMES),
         expand(PLOT_OUTDIR / "allelic_balance/{ref}_allelic_balance.png", ref=REFERENCE_NAMES),
         # ROH removed: expand(PLOT_OUTDIR / "roh/{ref}_f_roh.png", ref=REFERENCE_NAMES),
         PLOT_OUTDIR / "alignment/alignment_rates.png",

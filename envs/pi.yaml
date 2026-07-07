@@ -5,3 +5,5 @@ channels:
   - defaults
 dependencies:
   - vcftools
+  - bcftools >=1.15   # sample list per population for --keep
+  - pandas            # concatenate per-population vcftools outputs

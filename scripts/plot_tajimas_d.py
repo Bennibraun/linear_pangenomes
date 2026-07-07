@@ -1,3 +1,18 @@
+"""Per-population Tajima's D summary.
+
+Input is the long-format per-population Tajima's D table (CHROM, BIN_START,
+N_SNPS, TajimaD, POP). Tajima's D is a demographic/selection summary read *per
+population*, so we compare distributions across populations rather than plotting
+position. Two panels:
+
+  1. Violin + box of per-window Tajima's D for each population, with the D = 0
+     neutral line. D < 0 → excess rare alleles (expansion / purifying or positive
+     selection); D > 0 → excess intermediate-frequency alleles (contraction /
+     balancing selection / structure).
+  2. Genome-wide mean Tajima's D per population (bar), the headline number.
+
+SV_* accessory contigs are excluded so the summary reflects the core genome.
+"""
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -10,66 +25,62 @@ out_pdf  = snakemake.output.pdf
 out_png  = snakemake.output.png
 ref_name = snakemake.params.ref
 
-# vcftools writes "nan" for windows with too few SNPs; treat those as missing.
-df["TajimaD"] = pd.to_numeric(df["TajimaD"], errors="coerce")
-df = df.dropna(subset=["TajimaD"])
 
-# Drop augref SV alt contigs and tiny scaffolds (same approach as plot_pi.py).
-df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
-chrom_span_all = df.groupby("CHROM")["BIN_START"].agg(lambda s: s.max() - s.min())
-keep_chroms    = chrom_span_all[chrom_span_all >= 1_000_000].index.tolist()
-df             = df[df["CHROM"].isin(keep_chroms)]
-
-if df.empty:
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.text(0.5, 0.5, f"No qualifying chromosomes for Tajima's D — {ref_name}",
-            ha="center", va="center", transform=ax.transAxes)
+def _empty(msg):
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes)
     ax.axis("off")
     fig.savefig(out_pdf, bbox_inches="tight")
     fig.savefig(out_png, bbox_inches="tight", dpi=150)
     plt.close(fig)
     raise SystemExit(0)
 
-chroms      = sorted(df["CHROM"].unique())
-palette_arr = np.array(sns.color_palette("tab20", len(chroms)))
 
-chrom_grp  = df.groupby("CHROM")["BIN_START"]
-chrom_min  = chrom_grp.min()
-chrom_max  = chrom_grp.max()
-chrom_span = (chrom_max - chrom_min).reindex(chroms)
+if df.empty or "POP" not in df.columns:
+    _empty(f"No per-population Tajima's D data — {ref_name}")
 
-offsets, centers = {}, {}
-offset = 0
-for chrom in chroms:
-    span = chrom_span[chrom]
-    offsets[chrom] = offset
-    centers[chrom] = offset + span / 2
-    offset += span + 1_000_000
+df["TajimaD"] = pd.to_numeric(df["TajimaD"], errors="coerce")
+df = df.dropna(subset=["TajimaD"])
+df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
+if df.empty:
+    _empty(f"No core-genome Tajima's D windows — {ref_name}")
 
-df["x"] = df["CHROM"].map(offsets).astype(float) + df["BIN_START"].astype(float)
+# Order populations by median Tajima's D (most positive first).
+med = df.groupby("POP")["TajimaD"].median().sort_values(ascending=False)
+order = med.index.tolist()
+palette = dict(zip(order, sns.color_palette("husl", len(order))))
 
-# For Tajima's D both tails matter; thin by largest absolute deviation per bin.
-x_range  = df["x"].max() - df["x"].min()
-bin_size = max(1.0, x_range / 4800.0)
-df["_bin"]    = (df["x"] / bin_size).astype(np.int64)
-df["_abs_td"] = df["TajimaD"].abs()
-df = df.loc[df.groupby(["CHROM", "_bin"])["_abs_td"].idxmax()].drop(columns=["_bin", "_abs_td"])
+fig, (ax_v, ax_b) = plt.subplots(
+    1, 2, figsize=(max(10, 1.2 * len(order) + 6), 5),
+    gridspec_kw={"width_ratios": [2, 1]},
+)
 
-chrom_to_idx = {c: i for i, c in enumerate(chroms)}
-colors = palette_arr[df["CHROM"].map(chrom_to_idx).values % len(palette_arr)]
+# Panel 1: per-window Tajima's D distribution per population.
+sns.violinplot(data=df, x="POP", y="TajimaD", order=order, hue="POP",
+               palette=palette, legend=False, cut=0, inner="box",
+               linewidth=0.8, ax=ax_v)
+ax_v.axhline(0, color="black", lw=0.9, linestyle="--", label="D = 0 (neutral)")
+ax_v.set_xlabel("")
+ax_v.set_ylabel("Tajima's D (per window)")
+ax_v.set_xticklabels(ax_v.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+ax_v.legend(frameon=False, fontsize=8)
 
-fig, ax = plt.subplots(figsize=(16, 4))
-ax.scatter(df["x"].values, df["TajimaD"].values,
-           c=colors, s=4, alpha=0.5, linewidths=0, rasterized=True)
+# Panel 2: genome-wide mean Tajima's D per population.
+mean_d = df.groupby("POP")["TajimaD"].mean().reindex(order)
+ax_b.barh(range(len(order)), mean_d.values,
+          color=[palette[p] for p in order], edgecolor="white")
+ax_b.axvline(0, color="black", lw=0.8)
+ax_b.set_yticks(range(len(order)))
+ax_b.set_yticklabels(order, fontsize=8)
+ax_b.invert_yaxis()
+ax_b.set_xlabel("mean Tajima's D")
+for i, v in enumerate(mean_d.values):
+    ha = "left" if v >= 0 else "right"
+    ax_b.text(v, i, f" {v:.3f} ", va="center", ha=ha, fontsize=7)
 
-ax.axhline(0, color="grey", lw=0.5, linestyle="--")
-ax.set_xticks([centers[c] for c in chroms])
-ax.set_xticklabels(chroms, rotation=45, ha="right", fontsize=6)
-ax.set_xlabel("Chromosome")
-ax.set_ylabel("Tajima's D")
-ax.set_title("Tajima's D — " + ref_name, fontweight="bold")
-sns.despine(ax=ax)
-
+fig.suptitle(f"Tajima's D by population — {ref_name}", fontweight="bold")
+sns.despine(fig=fig)
+fig.tight_layout(rect=(0, 0, 1, 0.96))
 fig.savefig(out_pdf, bbox_inches="tight")
 fig.savefig(out_png, bbox_inches="tight", dpi=150)
 plt.close(fig)

@@ -1,3 +1,18 @@
+"""Per-population nucleotide diversity (π) summary.
+
+Input is the long-format per-population windowed-π table (CHROM, BIN_START,
+BIN_END, N_VARIANTS, PI, POP). We summarise diversity *across populations*
+rather than along the genome (a manhattan mixes populations and buries the
+comparison). Two panels:
+
+  1. Violin + box of per-window π for each population, sorted by median, with a
+     genome-wide median line. Answers "which populations are diverse vs
+     bottlenecked."
+  2. A bar of the genome-wide mean π per population (the headline number).
+
+SV_* accessory contigs are excluded so the per-population summary reflects the
+core genome (consistent across references).
+"""
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -10,64 +25,62 @@ out_pdf  = snakemake.output.pdf
 out_png  = snakemake.output.png
 ref_name = snakemake.params.ref
 
-# Drop augref-style SV alt contigs and any short scaffolds, otherwise the
-# augref plot is dominated by thousands of ~1 kb contigs each forced to
-# occupy a 1 Mb gap on the x-axis.
-df["PI"] = pd.to_numeric(df["PI"], errors="coerce")
-df = df.dropna(subset=["PI"])
 
-df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
-chrom_span_all = df.groupby("CHROM")["BIN_START"].agg(lambda s: s.max() - s.min())
-keep_chroms    = chrom_span_all[chrom_span_all >= 1_000_000].index.tolist()
-df             = df[df["CHROM"].isin(keep_chroms)]
-
-if df.empty:
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.text(0.5, 0.5, f"No qualifying chromosomes for π — {ref_name}",
-            ha="center", va="center", transform=ax.transAxes)
+def _empty(msg):
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes)
     ax.axis("off")
     fig.savefig(out_pdf, bbox_inches="tight")
     fig.savefig(out_png, bbox_inches="tight", dpi=150)
     plt.close(fig)
     raise SystemExit(0)
 
-chroms      = sorted(df["CHROM"].unique())
-palette_arr = np.array(sns.color_palette("tab20", len(chroms)))
 
-chrom_grp  = df.groupby("CHROM")["BIN_START"]
-chrom_min  = chrom_grp.min()
-chrom_max  = chrom_grp.max()
-chrom_span = (chrom_max - chrom_min).reindex(chroms)
+if df.empty or "POP" not in df.columns:
+    _empty(f"No per-population π data — {ref_name}")
 
-offsets, centers = {}, {}
-offset = 0
-for chrom in chroms:
-    span = chrom_span[chrom]
-    offsets[chrom] = offset
-    centers[chrom] = offset + span / 2
-    offset += span + 1_000_000
+df["PI"] = pd.to_numeric(df["PI"], errors="coerce")
+df = df.dropna(subset=["PI"])
+df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
+if df.empty:
+    _empty(f"No core-genome π windows — {ref_name}")
 
-df["x"] = df["CHROM"].map(offsets).astype(float) + df["BIN_START"].astype(float)
+# Order populations by median π (most diverse first).
+med = df.groupby("POP")["PI"].median().sort_values(ascending=False)
+order = med.index.tolist()
+palette = dict(zip(order, sns.color_palette("husl", len(order))))
 
-x_range  = df["x"].max() - df["x"].min()
-bin_size = max(1.0, x_range / 4800.0)
-df["_bin"] = (df["x"] / bin_size).astype(np.int64)
-df = df.loc[df.groupby(["CHROM", "_bin"])["PI"].idxmax()].drop(columns="_bin")
+fig, (ax_v, ax_b) = plt.subplots(
+    1, 2, figsize=(max(10, 1.2 * len(order) + 6), 5),
+    gridspec_kw={"width_ratios": [2, 1]},
+)
 
-chrom_to_idx = {c: i for i, c in enumerate(chroms)}
-colors = palette_arr[df["CHROM"].map(chrom_to_idx).values % len(palette_arr)]
+# Panel 1: per-window π distribution per population.
+sns.violinplot(data=df, x="POP", y="PI", order=order, hue="POP",
+               palette=palette, legend=False, cut=0, inner="box",
+               linewidth=0.8, ax=ax_v)
+ax_v.axhline(df["PI"].median(), color="grey", lw=0.8, linestyle="--",
+             label="cohort median")
+ax_v.set_xlabel("")
+ax_v.set_ylabel("π (per window)")
+ax_v.set_xticklabels(ax_v.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+ax_v.legend(frameon=False, fontsize=8)
 
-fig, ax = plt.subplots(figsize=(16, 4))
-ax.scatter(df["x"].values, df["PI"].values,
-           c=colors, s=4, alpha=0.5, linewidths=0, rasterized=True)
+# Panel 2: genome-wide mean π per population (headline number).
+mean_pi = df.groupby("POP")["PI"].mean().reindex(order)
+ax_b.barh(range(len(order)), mean_pi.values,
+          color=[palette[p] for p in order], edgecolor="white")
+ax_b.set_yticks(range(len(order)))
+ax_b.set_yticklabels(order, fontsize=8)
+ax_b.invert_yaxis()
+ax_b.set_xlabel("mean π")
+for i, v in enumerate(mean_pi.values):
+    ax_b.text(v, i, f" {v:.4f}", va="center", fontsize=7)
 
-ax.set_xticks([centers[c] for c in chroms])
-ax.set_xticklabels(chroms, rotation=45, ha="right", fontsize=6)
-ax.set_xlabel("Chromosome")
-ax.set_ylabel("π")
-ax.set_title("Nucleotide diversity — " + ref_name, fontweight="bold")
-sns.despine(ax=ax)
-
+fig.suptitle(f"Nucleotide diversity by population — {ref_name}",
+             fontweight="bold")
+sns.despine(fig=fig)
+fig.tight_layout(rect=(0, 0, 1, 0.96))
 fig.savefig(out_pdf, bbox_inches="tight")
 fig.savefig(out_png, bbox_inches="tight", dpi=150)
 plt.close(fig)

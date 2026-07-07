@@ -29,6 +29,7 @@ rule plot_selection_scan:
     output:
         pdf=PLOT_OUTDIR / "selection/{ref}_selection_scan.pdf",
         png=PLOT_OUTDIR / "selection/{ref}_selection_scan.png",
+        top_outliers=PLOT_OUTDIR / "selection/{ref}_top_outliers.tsv",
     conda:
         "../envs/plotting.yaml"
     params:
@@ -62,6 +63,31 @@ rule plot_fst:
         cpus=1,
     script:
         "../scripts/plot_fst.py"
+
+
+rule plot_fst_heatmap:
+    """Pairwise mean-FST heatmap across all population pairs for one reference —
+    the population-differentiation summary. Replaces reading N separate per-pair
+    manhattans with one matrix showing which populations are most divergent."""
+    input:
+        fsts=[FST_OUTDIR / f"fst/{{ref}}/{p1}_vs_{p2}.weir.fst"
+              for (p1, p2) in POP_PAIR_TUPLES],
+    output:
+        pdf=PLOT_OUTDIR / "fst/{ref}_fst_heatmap.pdf",
+        png=PLOT_OUTDIR / "fst/{ref}_fst_heatmap.png",
+        table=PLOT_OUTDIR / "fst/{ref}_fst_pairwise.tsv",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        ref=lambda wildcards: wildcards.ref,
+        pairs=POP_PAIR_TUPLES,
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_fst_heatmap.py"
 
 
 rule plot_afs:
@@ -119,6 +145,30 @@ rule plot_tajimas_d:
         cpus=1,
     script:
         "../scripts/plot_tajimas_d.py"
+
+
+rule plot_diversity_demography:
+    """π vs Tajima's D, one point per population — the demographic-quadrant plot.
+    Low π + negative D = bottleneck then expansion; high π + positive D =
+    structure/balancing; etc. Combines the per-population π and Tajima's D
+    genome-wide means for one reference."""
+    input:
+        pi=PI_OUTDIR / "{ref}.windowed.pi",
+        tajima=PI_OUTDIR / "{ref}.Tajima.D",
+    output:
+        pdf=PLOT_OUTDIR / "diversity/{ref}_pi_vs_tajd.pdf",
+        png=PLOT_OUTDIR / "diversity/{ref}_pi_vs_tajd.png",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        ref=lambda wildcards: wildcards.ref,
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_diversity_demography.py"
 
 
 rule plot_allelic_balance:
