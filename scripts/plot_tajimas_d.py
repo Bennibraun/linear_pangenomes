@@ -48,7 +48,8 @@ if df.empty:
 # Order populations by median Tajima's D (most positive first).
 med = df.groupby("POP")["TajimaD"].median().sort_values(ascending=False)
 order = med.index.tolist()
-palette = dict(zip(order, sns.color_palette("husl", len(order))))
+colors = sns.color_palette("husl", len(order))
+palette = dict(zip(order, colors))  # for the bar panel
 
 fig, (ax_v, ax_b) = plt.subplots(
     1, 2, figsize=(max(10, 1.2 * len(order) + 6), 5),
@@ -56,8 +57,9 @@ fig, (ax_v, ax_b) = plt.subplots(
 )
 
 # Panel 1: per-window Tajima's D distribution per population.
-sns.violinplot(data=df, x="POP", y="TajimaD", order=order, hue="POP",
-               palette=palette, legend=False, cut=0, inner="box",
+# palette as an ordered list (not hue=) so this works across seaborn versions.
+sns.violinplot(data=df, x="POP", y="TajimaD", order=order,
+               palette=colors, cut=0, inner="box",
                linewidth=0.8, ax=ax_v)
 ax_v.axhline(0, color="black", lw=0.9, linestyle="--", label="D = 0 (neutral)")
 ax_v.set_xlabel("")

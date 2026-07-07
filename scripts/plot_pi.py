@@ -48,16 +48,18 @@ if df.empty:
 # Order populations by median π (most diverse first).
 med = df.groupby("POP")["PI"].median().sort_values(ascending=False)
 order = med.index.tolist()
-palette = dict(zip(order, sns.color_palette("husl", len(order))))
+colors = sns.color_palette("husl", len(order))
+palette = dict(zip(order, colors))  # for the bar panel
 
 fig, (ax_v, ax_b) = plt.subplots(
     1, 2, figsize=(max(10, 1.2 * len(order) + 6), 5),
     gridspec_kw={"width_ratios": [2, 1]},
 )
 
-# Panel 1: per-window π distribution per population.
-sns.violinplot(data=df, x="POP", y="PI", order=order, hue="POP",
-               palette=palette, legend=False, cut=0, inner="box",
+# Panel 1: per-window π distribution per population. palette as an ordered list
+# (not hue=) so this works across seaborn versions.
+sns.violinplot(data=df, x="POP", y="PI", order=order,
+               palette=colors, cut=0, inner="box",
                linewidth=0.8, ax=ax_v)
 ax_v.axhline(df["PI"].median(), color="grey", lw=0.8, linestyle="--",
              label="cohort median")
