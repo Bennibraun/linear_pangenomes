@@ -49,7 +49,10 @@ mat = pd.DataFrame(np.nan, index=pops, columns=pops, dtype=float)
 for _, r in tidy.iterrows():
     mat.loc[r["pop1"], r["pop2"]] = r["mean_fst"]
     mat.loc[r["pop2"], r["pop1"]] = r["mean_fst"]
-np.fill_diagonal(mat.values, 0.0)
+# Set the diagonal via pandas — mat.values can be a read-only view, so
+# np.fill_diagonal on it raises "underlying array is read-only".
+for p in pops:
+    mat.loc[p, p] = 0.0
 
 fig, ax = plt.subplots(figsize=(1.1 * len(pops) + 3, 1.1 * len(pops) + 2))
 sns.heatmap(mat, annot=True, fmt=".3f", cmap="viridis", square=True,
