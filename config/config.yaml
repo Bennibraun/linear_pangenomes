@@ -10,7 +10,7 @@
 # include_assembly_align: short-reads-to-assembly QC metrics + plot. (Does NOT
 #   affect the assemblies themselves or the assembly-to-reference alignment that
 #   SV calling depends on.)
-include_graph: false
+include_graph: true
 include_assembly_align: false
 
 # ============================================================================

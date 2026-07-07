@@ -8,7 +8,7 @@ spectrum together. Each population is a single point (mean π, mean Tajima's D):
   - low π,  D > 0  : contraction / recent bottleneck
   - high π, D > 0  : population structure or balancing selection
 
-Both means are over core-genome windows (SV_* accessory contigs excluded).
+Both means are over the whole genome (core + accessory SV_* windows).
 """
 import numpy as np
 import pandas as pd
@@ -24,10 +24,10 @@ out_png     = snakemake.output.png
 ref_name    = snakemake.params.ref
 
 
-def _core(df, col):
+def _clean(df, col):
+    # Accessory (SV_*) windows are kept — the whole genome, core + accessory.
     df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=[col])
-    return df[~df["CHROM"].astype(str).str.startswith("SV_")]
+    return df.dropna(subset=[col])
 
 
 def _empty(msg):
@@ -45,8 +45,8 @@ td = pd.read_csv(tajima_path, sep="\t")
 if pi.empty or td.empty or "POP" not in pi.columns or "POP" not in td.columns:
     _empty(f"No per-population diversity data — {ref_name}")
 
-pi = _core(pi, "PI")
-td = _core(td, "TajimaD")
+pi = _clean(pi, "PI")
+td = _clean(td, "TajimaD")
 
 pi_mean = pi.groupby("POP")["PI"].mean()
 td_mean = td.groupby("POP")["TajimaD"].mean()

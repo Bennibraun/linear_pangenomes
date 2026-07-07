@@ -28,11 +28,13 @@ fst_col     = "WEIGHTED_FST" if is_windowed else "WEIR_AND_COCKERHAM_FST"
 df[fst_col] = pd.to_numeric(df[fst_col], errors="coerce")
 df = df.dropna(subset=[fst_col, pos_col])
 
-# Drop augref-style alternate contigs (SV_chrom_pos_sample_insN) so they don't
-# stretch the genome-wide x-axis. These add ~1 Mb of empty gap each and there
-# can be thousands of them. Conventional unplaced scaffolds (which on most
-# refs are also short) are dropped by the size filter below.
-df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
+# Accessory (SV_*) contigs have no genome coordinate, so they can't be placed on
+# the positional manhattan x-axis. Instead of discarding them, split them out and
+# show their FST in a side panel — the accessory sequence is the reason augref
+# exists and its differentiation should be visible.
+is_acc = df["CHROM"].astype(str).str.startswith("SV_")
+acc_fst = pd.to_numeric(df.loc[is_acc, fst_col], errors="coerce").clip(lower=0).dropna()
+df = df[~is_acc]
 
 # Drop tiny contigs (< 1 Mb of span) — keeps only true chromosomes and
 # substantial scaffolds. Span is the spread of variant positions on the
@@ -84,7 +86,15 @@ df = df.loc[df.groupby(["CHROM", "_bin"])["fst_plot"].idxmax()].drop(columns="_b
 chrom_to_idx = {c: i for i, c in enumerate(chroms)}
 colors = palette_arr[df["CHROM"].map(chrom_to_idx).values % len(palette_arr)]
 
-fig, ax = plt.subplots(figsize=(16, 4))
+# Add a narrow accessory-FST side panel when the ref has accessory sequence.
+if len(acc_fst):
+    fig, (ax, ax_acc) = plt.subplots(
+        1, 2, figsize=(17, 4), gridspec_kw={"width_ratios": [16, 1.2]},
+        sharey=True,
+    )
+else:
+    fig, ax = plt.subplots(figsize=(16, 4))
+
 ax.scatter(df["x"].values, df["fst_plot"].values,
            c=colors, s=4, alpha=0.5, linewidths=0, rasterized=True)
 
@@ -95,6 +105,15 @@ ax.set_ylabel("FST")
 ax.set_ylim(bottom=0)
 ax.set_title("FST — " + ref_name + ": " + pop1 + " vs " + pop2, fontweight="bold")
 sns.despine(ax=ax)
+
+if len(acc_fst):
+    ax_acc.boxplot([acc_fst.values], widths=0.6, showfliers=False)
+    ax_acc.scatter(np.random.normal(1, 0.06, len(acc_fst)), acc_fst.values,
+                   s=4, alpha=0.4, color="#C44E52", linewidths=0)
+    ax_acc.set_xticks([1])
+    ax_acc.set_xticklabels(["accessory\n(SV_*)"], fontsize=7)
+    ax_acc.set_title(f"n={len(acc_fst)}", fontsize=8)
+    sns.despine(ax=ax_acc)
 
 fig.savefig(out_pdf, bbox_inches="tight")
 fig.savefig(out_png, bbox_inches="tight", dpi=150)

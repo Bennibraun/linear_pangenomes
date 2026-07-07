@@ -1,7 +1,7 @@
 """Pairwise mean-FST heatmap across all population pairs for one reference.
 
 Each per-pair vcftools FST file is reduced to a single genome-wide mean FST
-(core genome, SV_* excluded), then arranged into a symmetric population ×
+(whole genome, core + accessory), then arranged into a symmetric population ×
 population matrix. This is the population-structure summary: one glance shows
 which populations are most differentiated, replacing N separate per-pair
 manhattan plots. A tidy pairwise table is written alongside.
@@ -30,7 +30,7 @@ def mean_fst(path):
     if fst_col not in df.columns:
         return np.nan
     df[fst_col] = pd.to_numeric(df[fst_col], errors="coerce")
-    df = df[~df["CHROM"].astype(str).str.startswith("SV_")]
+    # Accessory (SV_*) windows are kept — the whole genome contributes to FST.
     vals = df[fst_col].dropna()
     # FST is bounded at 0; vcftools can emit small negatives from estimator
     # noise. Clip to 0 for a cleaner mean/heatmap.
