@@ -105,11 +105,16 @@ min_sv_size = int(snakemake.params.min_sv_size)
 
 def record_sv_len(rec):
     """Size of a VCF record = max allele-length difference vs REF.
-    Prefer INFO/SVLEN when present, else compute from REF/ALT lengths."""
-    svlen = rec.info.get("SVLEN")
-    if svlen is not None:
-        vals = svlen if isinstance(svlen, (tuple, list)) else [svlen]
-        return max((abs(int(v)) for v in vals if v is not None), default=0)
+    Prefer INFO/SVLEN when the header declares it, else compute from REF/ALT
+    lengths. pysam raises on rec.info access for undeclared INFO keys (the vg
+    call VCFs don't declare SVLEN), so we check the header first."""
+    if "SVLEN" in rec.header.info:
+        svlen = rec.info.get("SVLEN")
+        if svlen is not None:
+            vals = svlen if isinstance(svlen, (tuple, list)) else [svlen]
+            nums = [abs(int(v)) for v in vals if v is not None]
+            if nums:
+                return max(nums)
     ref_len = len(rec.ref) if rec.ref else 0
     return max((abs(len(a) - ref_len) for a in (rec.alts or [])), default=0)
 
