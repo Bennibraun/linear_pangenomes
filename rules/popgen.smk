@@ -142,21 +142,54 @@ rule f1_concordance_summary:
 # ---------------------------------------------------------------------------
 # Per-reference summary table (Jeon et al. 2026 Table 1 equivalent)
 # ---------------------------------------------------------------------------
+rule graph_total_length:
+    """Total sequence length of the pangenome graph (sum of node lengths) via
+    `vg stats -l`. Runs in VG_IMAGE so the summary rule's env stays light. This
+    is the graph's true size, distinct from mc_graph's SNP-calling coordinate
+    space (which is conspec after surjection)."""
+    input:
+        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
+    output:
+        length=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.total_length.txt",
+    container:
+        VG_IMAGE
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        # `vg stats -l` prints "length <N>"; keep the number.
+        vg stats -l {input.gbz} | awk '{{print $NF}}' > {output.length}
+        """
+
+
+# ---------------------------------------------------------------------------
 rule per_ref_summary:
-    """One row per reference with the headline comparison metrics:
-    SNP counts (raw + filtered), SV count (mc_graph only), mean mapping rate,
-    mean mapping quality, mean π, mean F_ROH, genome length, size vs conspec.
-    Mirrors Jeon et al. 2026 Table 1."""
+    """One row per reference with the headline comparison metrics: SNP counts
+    (raw + filtered), SV count, mean mapping rate/quality, mean π, mean Tajima's
+    D, mean FST, genome length, size vs conspec, and (graph only) total graph
+    sequence. SV counts come from the ref-appropriate source: augref from the
+    long-read SV catalog (sniffles/cuteSV -> SURVIVOR), mc_graph from its own
+    vg-call VCFs; these are independent discovery paths."""
     input:
         vcfs=expand(
             VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
             ref=REFERENCE_NAMES,
         ),
-        # Graph SV VCFs only exist when the graph is enabled; when off this is
-        # empty and the script reports n_svs=0 (mc_graph isn't a ref anyway).
+        # mc_graph SVs: vg-call VCFs (graph only; empty when graph off).
         sv_vcfs=expand(VC_OUTDIR / "sv/vg/{sample}.vcf.gz", sample=SHORT_SAMPLES) if INCLUDE_GRAPH else [],
+        # augref SVs: the long-read pan-sample SV catalog that builds augref.
+        sv_catalog=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
+        # Total graph sequence (precomputed via `vg stats -l`; graph only).
+        graph_length=[CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.total_length.txt"] if INCLUDE_GRAPH else [],
         metrics=METRICS_OUTDIR / "alignment_metrics.tsv",
         pi=expand(PI_OUTDIR / "{ref}.windowed.pi", ref=REFERENCE_NAMES),
+        tajima=expand(PI_OUTDIR / "{ref}.Tajima.D", ref=REFERENCE_NAMES),
+        fst=[FST_OUTDIR / f"fst/{ref}/{p1}_vs_{p2}.weir.fst"
+             for ref in REFERENCE_NAMES for (p1, p2) in POP_PAIR_TUPLES],
     output:
         summary=QC_OUTDIR / "per_ref_summary.tsv",
     conda:
@@ -166,6 +199,9 @@ rule per_ref_summary:
         fastas=[REFS_NESTED[r]["fasta"] for r in REFERENCE_NAMES],
         fais=[f"{REFS_NESTED[r]['fasta']}.fai" for r in REFERENCE_NAMES],
         conspec_ref="conspec",
+        pop_pairs=POP_PAIR_TUPLES,
+        include_graph=INCLUDE_GRAPH,
+        min_sv_size=SV_MIN_SIZE,
     resources:
         slurm_partition="short",
         runtime=120,
