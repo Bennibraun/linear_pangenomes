@@ -12,16 +12,22 @@ df      = pd.read_csv(snakemake.input.metrics, sep="\t")
 out_pdf = snakemake.output.pdf
 out_png = snakemake.output.png
 
-# ── numeric coercion (cactus emits "NA" for depth / mapq) ─────────────────────
+# align_metrics_per_gam emits identical rows under both "cactus" and
+# "mc_graph" labels (same GAM, same stats) so downstream tools can find the
+# graph metrics under either name. Drop the "cactus" duplicate here — same
+# convention as scripts/sample_qc.py — so the graph appears once.
+df = df[df["alignment_type"] != "cactus"]
+
+# ── numeric coercion (mc_graph emits "NA" for depth) ───────────────────────────
 df["mapping_rate_pct"] = pd.to_numeric(df["mapping_rate"], errors="coerce") * 100
 df["mean_mapq"]        = pd.to_numeric(df["mean_mapq"],    errors="coerce")
 df["mean_depth"]       = pd.to_numeric(df["mean_depth"],   errors="coerce")
 
-# ── reference-type order: alpha, cactus last ───────────────────────────────────
+# ── reference-type order: alpha, mc_graph last ─────────────────────────────────
 all_refs    = df["alignment_type"].unique().tolist()
-cactus_refs = [r for r in all_refs if "cactus" in r.lower()]
-other_refs  = sorted(r for r in all_refs if "cactus" not in r.lower())
-ref_order   = other_refs + cactus_refs
+graph_refs  = [r for r in all_refs if "mc_graph" in r.lower()]
+other_refs  = sorted(r for r in all_refs if "mc_graph" not in r.lower())
+ref_order   = other_refs + graph_refs
 
 samples = sorted(df["sample"].unique())
 palette = dict(zip(samples, sns.color_palette("tab10", len(samples))))
