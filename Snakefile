@@ -1258,8 +1258,12 @@ rule align_short_to_assembly_summary:
 
 rule align_metrics_summary:
     input:
+        # Linear refs only here — mc_graph metrics come from
+        # align_metrics_per_gam below. _BCFTOOLS_REFS includes mc_graph, so
+        # using it here would list the same mc_graph.metrics.tsv path twice
+        # and double-count that row when the run: block concatenates input.
         expand(METRICS_OUTDIR / "{sample}/{sample}.{ref}.metrics.tsv",
-               sample=SHORT_SAMPLES, ref=_BCFTOOLS_REFS),
+               sample=SHORT_SAMPLES, ref=_LINEAR_REFS),
         # Graph alignment metrics only when the graph is enabled.
         *([
             *expand(METRICS_OUTDIR / "{sample}/{sample}.cactus.metrics.tsv", sample=SHORT_SAMPLES),
