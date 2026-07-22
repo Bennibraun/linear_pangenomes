@@ -853,14 +853,19 @@ rule split_ldpruned_vcf_by_region:
         set -euo pipefail
         mkdir -p $(dirname {output.vcf})
         if [ "{wildcards.region}" = "core" ]; then
-            awk -F'\t' '$1 !~ /^SV_/ {{print $1}}' {input.fai} > $(dirname {output.vcf})/keep_contigs.txt
+            keep_contigs=$(awk -F'\t' '$1 !~ /^SV_/ {{print $1}}' {input.fai} | paste -sd, -)
         else
-            awk -F'\t' '$1 ~ /^SV_/ {{print $1}}' {input.fai} > $(dirname {output.vcf})/keep_contigs.txt
+            keep_contigs=$(awk -F'\t' '$1 ~ /^SV_/ {{print $1}}' {input.fai} | paste -sd, -)
         fi
-        bcftools view -R $(dirname {output.vcf})/keep_contigs.txt {input.vcf} \
+        # -t/--targets with a comma-separated region string (not -R/-T with a
+        # file): both -R and -T require CHROM+POS columns or a BED and reject
+        # a bare one-column contig list ("Could not parse ... using the
+        # columns 1,2[,-1]"). -t/-r are documented to accept plain region
+        # names directly in the argument, so build the list as a string
+        # instead of relying on undocumented file-parsing behavior.
+        bcftools view -t "$keep_contigs" {input.vcf} \
             -Oz -o {output.vcf}
         tabix -p vcf {output.vcf}
-        rm -f $(dirname {output.vcf})/keep_contigs.txt
         """
 
 

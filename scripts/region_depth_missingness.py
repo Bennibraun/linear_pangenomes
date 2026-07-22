@@ -8,10 +8,11 @@ Depth and MAPQ come from `samtools depth`/`samtools view` on the augref BAM,
 split by contig using the .fai. Missingness comes from `bcftools query` GT
 fields on the per-sample VCF, same split. One row per (sample, region).
 
-Contigs are passed via BED/regions files (-b/-L/-R), not one subprocess call
-per contig or one comma-joined region string — augref can carry hundreds to
-thousands of SV_* contigs, and per-contig subprocess spawns or an oversized
--r argument don't scale to that.
+Depth/MAPQ use a BED file (samtools -b/-L accepts one); missingness uses a
+comma-joined -t/--targets argument (bcftools -R/-T require CHROM+POS columns
+or a BED and reject a bare one-column contig list). Either way, contigs are
+batched per region rather than spawning one subprocess per contig — augref
+can carry hundreds to thousands of SV_* contigs.
 """
 import subprocess
 import tempfile
@@ -74,16 +75,18 @@ def region_depth_mapq(fai_row_list):
 def region_missingness(fai_row_list):
     if not fai_row_list:
         return 0.0, 0
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        f.write("\n".join(row[0] for row in fai_row_list) + "\n")
-        regions_file = f.name
-    try:
-        out = subprocess.run(
-            ["bcftools", "query", "-R", regions_file, "-f", "[%GT]\n", vcf],
-            capture_output=True, text=True, check=True,
-        ).stdout
-    finally:
-        Path(regions_file).unlink(missing_ok=True)
+    # -t/--targets with a comma-separated region string (not -R/-T with a
+    # file): both -R and -T require CHROM+POS columns or a BED and reject a
+    # bare one-column contig list ("Could not parse ... using the columns
+    # 1,2[,-1]"). -t/-r are documented to accept plain region names directly
+    # in the argument. Passed as a single argv element (not through a shell),
+    # so OS ARG_MAX (~2MB on Linux) is the only limit — thousands of contig
+    # names fit comfortably under that.
+    keep_contigs = ",".join(row[0] for row in fai_row_list)
+    out = subprocess.run(
+        ["bcftools", "query", "-t", keep_contigs, "-f", "[%GT]\n", vcf],
+        capture_output=True, text=True, check=True,
+    ).stdout
     n_sites = 0
     n_missing = 0
     for line in out.splitlines():
