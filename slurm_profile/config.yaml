@@ -2,7 +2,7 @@ executor: slurm
 cores: 100
 
 default-resources:
-  - cpus=2
+  - cpus=1
   - mem_mb=5000
   - runtime=3600
   - slurm_partition=short
@@ -13,15 +13,12 @@ resources:
 
 slurm-partition-config: partitions.yaml
 
-# jobs: 100
-jobs: 40
+jobs: 50
 latency-wait: 60
 max-jobs-per-second: 5
 max-status-checks-per-second: 1
 keep-going: true
 rerun-incomplete: true
 retries: 2
-# rerun-triggers:
-  # - mtime
 printshellcmds: true
 singularity-args: "--bind /scratch,/Users"
