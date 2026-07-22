@@ -8,11 +8,12 @@ Depth and MAPQ come from `samtools depth`/`samtools view` on the augref BAM,
 split by contig using the .fai. Missingness comes from `bcftools query` GT
 fields on the per-sample VCF, same split. One row per (sample, region).
 
-Depth/MAPQ use a BED file (samtools -b/-L accepts one); missingness uses a
-comma-joined -t/--targets argument (bcftools -R/-T require CHROM+POS columns
-or a BED and reject a bare one-column contig list). Either way, contigs are
-batched per region rather than spawning one subprocess per contig — augref
-can carry hundreds to thousands of SV_* contigs.
+Both depth/MAPQ and missingness pass contigs via a 3-column BED file
+(CHROM/START/END): bcftools -R/-T require CHROM+POS columns or a BED and
+reject a bare one-column contig-name file, and a comma-joined -t/-r argument
+string hits the OS ARG_MAX ("Argument list too long") once augref's SV_*
+contig count gets into the thousands. Either way, contigs are batched per
+region rather than spawning one subprocess per contig.
 """
 import subprocess
 import tempfile
@@ -33,58 +34,51 @@ core_rows = [r for r in fai_rows if not r[0].startswith("SV_")]
 acc_rows  = [r for r in fai_rows if r[0].startswith("SV_")]
 
 
-def region_depth_mapq(fai_row_list):
-    if not fai_row_list:
-        return 0.0, 0.0
+def make_bed(fai_row_list):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".bed", delete=False) as f:
         for row in fai_row_list:
             f.write(f"{row[0]}\t0\t{row[1]}\n")
-        bed_file = f.name
-    try:
-        total_sum, total_n = 0.0, 0
-        depth_out = subprocess.run(
-            ["samtools", "depth", "-a", "-b", bed_file, bam],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        for line in depth_out.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 3:
-                continue
-            total_sum += float(parts[2])
-            total_n += 1
+        return f.name
 
-        mapq_sum, mapq_n = 0.0, 0
-        mapq_out = subprocess.run(
-            ["samtools", "view", "-F", "0x904", "-L", bed_file, bam],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        for line in mapq_out.splitlines():
-            fields = line.split("\t")
-            if len(fields) < 5:
-                continue
-            mapq_sum += float(fields[4])
-            mapq_n += 1
-    finally:
-        Path(bed_file).unlink(missing_ok=True)
+
+def region_depth_mapq(bed_file):
+    total_sum, total_n = 0.0, 0
+    depth_out = subprocess.run(
+        ["samtools", "depth", "-a", "-b", bed_file, bam],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    for line in depth_out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        total_sum += float(parts[2])
+        total_n += 1
+
+    mapq_sum, mapq_n = 0.0, 0
+    mapq_out = subprocess.run(
+        ["samtools", "view", "-F", "0x904", "-L", bed_file, bam],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    for line in mapq_out.splitlines():
+        fields = line.split("\t")
+        if len(fields) < 5:
+            continue
+        mapq_sum += float(fields[4])
+        mapq_n += 1
 
     mean_depth = total_sum / total_n if total_n else 0.0
     mean_mapq  = mapq_sum / mapq_n if mapq_n else 0.0
     return mean_depth, mean_mapq
 
 
-def region_missingness(fai_row_list):
-    if not fai_row_list:
-        return 0.0, 0
-    # -t/--targets with a comma-separated region string (not -R/-T with a
-    # file): both -R and -T require CHROM+POS columns or a BED and reject a
-    # bare one-column contig list ("Could not parse ... using the columns
-    # 1,2[,-1]"). -t/-r are documented to accept plain region names directly
-    # in the argument. Passed as a single argv element (not through a shell),
-    # so OS ARG_MAX (~2MB on Linux) is the only limit — thousands of contig
-    # names fit comfortably under that.
-    keep_contigs = ",".join(row[0] for row in fai_row_list)
+def region_missingness(bed_file):
+    # -R with a 3-column BED file (not -T/-t): bcftools -R/-T require
+    # CHROM+POS columns or a BED and reject a bare one-column contig-name
+    # file ("Could not parse ... using the columns 1,2[,-1]"), and a
+    # comma-joined -t/-r argument string hits the OS ARG_MAX ("Argument list
+    # too long") once the SV_* contig count gets into the thousands.
     out = subprocess.run(
-        ["bcftools", "query", "-t", keep_contigs, "-f", "[%GT]\n", vcf],
+        ["bcftools", "query", "-R", bed_file, "-f", "[%GT]\n", vcf],
         capture_output=True, text=True, check=True,
     ).stdout
     n_sites = 0
@@ -102,8 +96,18 @@ def region_missingness(fai_row_list):
 
 rows = []
 for region, row_list in (("core", core_rows), ("accessory", acc_rows)):
-    mean_depth, mean_mapq = region_depth_mapq(row_list)
-    missing_rate, n_sites = region_missingness(row_list)
+    if not row_list:
+        rows.append({
+            "sample": sample, "region": region, "n_contigs": 0,
+            "mean_depth": 0.0, "mean_mapq": 0.0, "n_sites": 0, "missing_rate": 0.0,
+        })
+        continue
+    bed_file = make_bed(row_list)
+    try:
+        mean_depth, mean_mapq = region_depth_mapq(bed_file)
+        missing_rate, n_sites = region_missingness(bed_file)
+    finally:
+        Path(bed_file).unlink(missing_ok=True)
     rows.append({
         "sample": sample,
         "region": region,

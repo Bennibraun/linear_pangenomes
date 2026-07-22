@@ -852,20 +852,22 @@ rule split_ldpruned_vcf_by_region:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {output.vcf})
+        bed_file=$(dirname {output.vcf})/keep_contigs.bed
         if [ "{wildcards.region}" = "core" ]; then
-            keep_contigs=$(awk -F'\t' '$1 !~ /^SV_/ {{print $1}}' {input.fai} | paste -sd, -)
+            awk -F'\t' '$1 !~ /^SV_/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed_file"
         else
-            keep_contigs=$(awk -F'\t' '$1 ~ /^SV_/ {{print $1}}' {input.fai} | paste -sd, -)
+            awk -F'\t' '$1 ~ /^SV_/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed_file"
         fi
-        # -t/--targets with a comma-separated region string (not -R/-T with a
-        # file): both -R and -T require CHROM+POS columns or a BED and reject
-        # a bare one-column contig list ("Could not parse ... using the
-        # columns 1,2[,-1]"). -t/-r are documented to accept plain region
-        # names directly in the argument, so build the list as a string
-        # instead of relying on undocumented file-parsing behavior.
-        bcftools view -t "$keep_contigs" {input.vcf} \
+        # A comma-joined -t/-r argument string blows the shell's ARG_MAX with
+        # augref's thousands of SV_* contigs ("Argument list too long"), and
+        # -R/-T with a bare one-column contig-name file fails to parse
+        # ("Could not parse ... using the columns 1,2[,-1]") — bcftools wants
+        # CHROM+POS columns there. A 3-column BED (CHROM/START/END) is the
+        # documented format -R accepts via a file, so use that instead.
+        bcftools view -R "$bed_file" {input.vcf} \
             -Oz -o {output.vcf}
         tabix -p vcf {output.vcf}
+        rm -f "$bed_file"
         """
 
 
