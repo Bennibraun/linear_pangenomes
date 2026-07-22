@@ -564,6 +564,10 @@ rule sv_dedup_sequences:
         fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.dedup.fasta",
     conda:
         "envs/sv_calling.yaml"
+    resources:
+        runtime=960,
+        mem_mb=16000,
+        cpus=4,
     shell:
         r"""
         set -euo pipefail
@@ -872,7 +876,7 @@ rule align_bwa_conspec:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=960,
+        runtime=1440,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
@@ -900,7 +904,7 @@ rule align_bwa_hetspec:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=960,
+        runtime=1440,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
@@ -930,7 +934,7 @@ rule giraffe_align:
         ALIGN_THREADS
     resources:
         slurm_partition="long",
-        runtime=960,
+        runtime=1440,
         mem_mb=32000,
         cpus=ALIGN_THREADS
     shell:
