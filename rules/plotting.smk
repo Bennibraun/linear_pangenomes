@@ -147,6 +147,63 @@ rule plot_tajimas_d:
         "../scripts/plot_tajimas_d.py"
 
 
+rule plot_afs_by_region:
+    input:
+        afs_by_region=FST_OUTDIR / "afs/augref.afs_by_region.tsv",
+    output:
+        pdf=PLOT_OUTDIR / "afs/augref_afs_by_region.pdf",
+        png=PLOT_OUTDIR / "afs/augref_afs_by_region.png",
+    conda:
+        "../envs/plotting.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=2000,
+        cpus=1,
+    script:
+        "../scripts/plot_afs_by_region.py"
+
+
+rule plot_region_qc:
+    input:
+        region_qc=QC_OUTDIR / "region_qc_summary.tsv",
+        tajima=PI_OUTDIR / "augref.Tajima.D",
+    output:
+        pdf=PLOT_OUTDIR / "qc/augref_region_qc.pdf",
+        png=PLOT_OUTDIR / "qc/augref_region_qc.png",
+    conda:
+        "../envs/plotting.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_region_qc.py"
+
+
+rule plot_pca_by_region:
+    input:
+        cov_core=PCANGSD_OUTDIR / "augref_core/pcangsd.cov",
+        samples_core=PCANGSD_OUTDIR / "augref_core/samples.txt",
+        cov_accessory=PCANGSD_OUTDIR / "augref_accessory/pcangsd.cov",
+        samples_accessory=PCANGSD_OUTDIR / "augref_accessory/samples.txt",
+    output:
+        pdf=PLOT_OUTDIR / "pca/augref_pca_by_region.pdf",
+        png=PLOT_OUTDIR / "pca/augref_pca_by_region.png",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        sample_pop="|".join(s + "," + SAMPLE_TO_POP.get(s, "unknown") for s in SHORT_SAMPLES),
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/plot_pca_by_region.py"
+
+
 rule plot_diversity_demography:
     """π vs Tajima's D, one point per population — the demographic-quadrant plot.
     Low π + negative D = bottleneck then expansion; high π + positive D =

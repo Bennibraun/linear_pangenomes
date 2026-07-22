@@ -39,6 +39,31 @@ rule afs_per_ref:
         "../scripts/afs_per_ref.py"
 
 
+rule afs_by_region_augref:
+    """Core-vs-accessory (SV_*) folded SFS for augref only. Distinguishes the
+    two Tajima's-D hypotheses directly: a real excess of shared ancestral
+    variation in the accessory sequence should show up as an SFS shifted
+    toward common variants relative to core; a calling-depth artifact would
+    instead show a rare-variant deficit tracking with the depth/MAPQ gap in
+    region_qc_summary.tsv rather than a clean shift in the whole spectrum."""
+    input:
+        vcf=VC_OUTDIR / "bcftools/augref/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/augref/combined/merged.vcf.gz.tbi",
+    output:
+        afs_by_region=FST_OUTDIR / "afs/augref.afs_by_region.tsv",
+    conda:
+        "../envs/fst_afs.yaml"
+    params:
+        bins=AFS_BINS,
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/afs_per_ref.py"
+
+
 # ---------------------------------------------------------------------------
 # FST between population pairs
 # ---------------------------------------------------------------------------
@@ -482,6 +507,66 @@ rule allelic_balance_summary:
 
 
 # ---------------------------------------------------------------------------
+# Core vs accessory depth / missingness / MAPQ (augref only)
+# ---------------------------------------------------------------------------
+rule region_depth_missingness:
+    """Per-sample depth, mean MAPQ, and GT missingness split core (non-SV_*)
+    vs accessory (SV_*) on augref. Distinguishes whether a core-vs-accessory
+    Tajima's D / FST gap reflects real shared variation (per user hypothesis)
+    from a coverage/mappability artifact: if accessory depth/MAPQ is
+    systematically lower, rare variants there are undercalled, which alone
+    inflates Tajima's D and can suppress FST."""
+    input:
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai",
+        vcf=VC_OUTDIR / "bcftools/augref/per_sample/{sample}.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/augref/per_sample/{sample}.vcf.gz.tbi",
+        fai=f"{ALIGN_AUGREF}.fai",
+    output:
+        tsv=QC_OUTDIR / "region_qc/{sample}.region_qc.tsv",
+    conda:
+        "../envs/align_metrics.yaml"
+    params:
+        sample=lambda wildcards: wildcards.sample,
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/region_depth_missingness.py"
+
+
+rule region_qc_summary:
+    """Cohort-wide core-vs-accessory depth/MAPQ/missingness table (augref)."""
+    input:
+        expand(QC_OUTDIR / "region_qc/{sample}.region_qc.tsv", sample=SHORT_SAMPLES),
+    output:
+        summary=QC_OUTDIR / "region_qc_summary.tsv",
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=2000,
+        cpus=1,
+    run:
+        from pathlib import Path
+
+        out_path = Path(output.summary)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        rows, header = [], None
+        for path in input:
+            lines = Path(path).read_text().strip().splitlines()
+            if not lines:
+                continue
+            if header is None:
+                header = lines[0]
+            rows.extend(lines[1:])
+        if header is None:
+            header = "sample\tregion\tn_contigs\tmean_depth\tmean_mapq\tn_sites\tmissing_rate"
+        out_path.write_text("\n".join([header] + rows) + "\n")
+
+
+# ---------------------------------------------------------------------------
 # Runs of homozygosity (F_ROH) — REMOVED
 # ---------------------------------------------------------------------------
 # ROH was cut entirely: with SV_* accessory contigs excluded from ROH calling,
@@ -737,6 +822,91 @@ rule pcangsd:
         paste "$tmpdir/all_coords.tsv" {params.prefix}.sites \
             | awk -F'\t' '$4 == 1 {{OFS="\t"; print $1, $2, $3}}' \
             > {output.snp_coords}
+        """
+
+
+rule split_ldpruned_vcf_by_region:
+    """Subset the augref LD-pruned VCF into core (non-SV_*) and accessory
+    (SV_*) site sets for a separate PCA per region. If population structure
+    (the 3 short-read populations) shows up clearly in the core-only PCA but
+    collapses in the accessory-only PCA, that supports the "accessory carries
+    variation shared across populations" hypothesis directly, rather than
+    inferring it from Tajima's D / FST alone."""
+    input:
+        vcf=PCANGSD_OUTDIR / "augref/merged.ldpruned.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "augref/merged.ldpruned.vcf.gz.tbi",
+        fai=f"{ALIGN_AUGREF}.fai",
+    output:
+        vcf=PCANGSD_OUTDIR / "augref_{region}/merged.ldpruned.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "augref_{region}/merged.ldpruned.vcf.gz.tbi",
+    conda:
+        "../envs/ld_prune.yaml"
+    wildcard_constraints:
+        region="core|accessory",
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {output.vcf})
+        if [ "{wildcards.region}" = "core" ]; then
+            awk -F'\t' '$1 !~ /^SV_/ {{print $1}}' {input.fai} > $(dirname {output.vcf})/keep_contigs.txt
+        else
+            awk -F'\t' '$1 ~ /^SV_/ {{print $1}}' {input.fai} > $(dirname {output.vcf})/keep_contigs.txt
+        fi
+        bcftools view -R $(dirname {output.vcf})/keep_contigs.txt {input.vcf} \
+            -Oz -o {output.vcf}
+        tabix -p vcf {output.vcf}
+        rm -f $(dirname {output.vcf})/keep_contigs.txt
+        """
+
+
+rule pcangsd_by_region:
+    """PCAngsd restricted to augref core-only or accessory-only sites. Same
+    body as the main `pcangsd` rule (plink BED conversion, --selection,
+    --sites-save), applied to the region-subset VCF from
+    split_ldpruned_vcf_by_region instead of the whole-genome LD-pruned VCF."""
+    input:
+        vcf=PCANGSD_OUTDIR / "augref_{region}/merged.ldpruned.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "augref_{region}/merged.ldpruned.vcf.gz.tbi",
+    output:
+        cov=PCANGSD_OUTDIR / "augref_{region}/pcangsd.cov",
+        samples=PCANGSD_OUTDIR / "augref_{region}/samples.txt",
+    conda:
+        "../envs/pcangsd.yaml"
+    wildcard_constraints:
+        region="core|accessory",
+    threads: 4
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=16000,
+        cpus=4,
+    params:
+        prefix=lambda wildcards: str(PCANGSD_OUTDIR / f"augref_{wildcards.region}" / "pcangsd"),
+        n_pcs=PCANGSD_N_PCS,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p $(dirname {params.prefix})
+        tmpdir=$(mktemp -d -p $(dirname {params.prefix}))
+        trap "rm -rf $tmpdir" EXIT
+
+        plink --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+              --memory {resources.mem_mb} \
+              --out "$tmpdir/plink"
+
+        bcftools query -l {input.vcf} \
+            | sed -E 's/^(.*)_\1$/\1/' > {output.samples}
+
+        pcangsd \
+            -p "$tmpdir/plink" \
+            -t {threads} \
+            -e {params.n_pcs} \
+            -o {params.prefix}
         """
 
 
