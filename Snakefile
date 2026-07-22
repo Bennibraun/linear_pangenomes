@@ -373,7 +373,14 @@ rule all:
         QC_OUTDIR / "sample_qc.tsv",
         QC_OUTDIR / "per_ref_summary.tsv",
         # F1 concordance between SNP call sets across refs
-        F1_OUTDIR / "f1_summary.tsv"
+        F1_OUTDIR / "f1_summary.tsv",
+        # Core vs accessory diagnostics (augref): is the Tajima's D / FST gap
+        # real shared variation or a depth/mappability calling artifact?
+        QC_OUTDIR / "region_qc_summary.tsv",
+        FST_OUTDIR / "afs/augref.afs_by_region.tsv",
+        PLOT_OUTDIR / "afs/augref_afs_by_region.png",
+        PLOT_OUTDIR / "qc/augref_region_qc.png",
+        PLOT_OUTDIR / "pca/augref_pca_by_region.png"
 
 rule nanostat:
     input:
