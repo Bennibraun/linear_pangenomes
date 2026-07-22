@@ -525,7 +525,7 @@ rule region_depth_missingness:
     output:
         tsv=QC_OUTDIR / "region_qc/{sample}.region_qc.tsv",
     conda:
-        "../envs/align_metrics.yaml"
+        "../envs/bcftools.yaml"
     params:
         sample=lambda wildcards: wildcards.sample,
     resources:

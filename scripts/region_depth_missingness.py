@@ -7,8 +7,14 @@ rare variants, which mechanically inflates Tajima's D and can suppress FST).
 Depth and MAPQ come from `samtools depth`/`samtools view` on the augref BAM,
 split by contig using the .fai. Missingness comes from `bcftools query` GT
 fields on the per-sample VCF, same split. One row per (sample, region).
+
+Contigs are passed via BED/regions files (-b/-L/-R), not one subprocess call
+per contig or one comma-joined region string — augref can carry hundreds to
+thousands of SV_* contigs, and per-contig subprocess spawns or an oversized
+-r argument don't scale to that.
 """
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -21,21 +27,22 @@ sample     = snakemake.params.sample
 
 out_path.parent.mkdir(parents=True, exist_ok=True)
 
-contigs = [line.split("\t")[0] for line in Path(fai).read_text().splitlines() if line.strip()]
-core_contigs = [c for c in contigs if not c.startswith("SV_")]
-acc_contigs  = [c for c in contigs if c.startswith("SV_")]
+fai_rows = [line.split("\t") for line in Path(fai).read_text().splitlines() if line.strip()]
+core_rows = [r for r in fai_rows if not r[0].startswith("SV_")]
+acc_rows  = [r for r in fai_rows if r[0].startswith("SV_")]
 
 
-def region_depth_mapq(contig_list):
-    if not contig_list:
+def region_depth_mapq(fai_row_list):
+    if not fai_row_list:
         return 0.0, 0.0
-    total_sum, total_n = 0.0, 0
-    mapq_sum, mapq_n = 0.0, 0
-    # Batch contigs through one samtools view/depth call each to avoid
-    # spawning one subprocess per contig on refs with many SV_* entries.
-    for c in contig_list:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".bed", delete=False) as f:
+        for row in fai_row_list:
+            f.write(f"{row[0]}\t0\t{row[1]}\n")
+        bed_file = f.name
+    try:
+        total_sum, total_n = 0.0, 0
         depth_out = subprocess.run(
-            ["samtools", "depth", "-a", "-r", c, bam],
+            ["samtools", "depth", "-a", "-b", bed_file, bam],
             capture_output=True, text=True, check=True,
         ).stdout
         for line in depth_out.splitlines():
@@ -45,8 +52,9 @@ def region_depth_mapq(contig_list):
             total_sum += float(parts[2])
             total_n += 1
 
+        mapq_sum, mapq_n = 0.0, 0
         mapq_out = subprocess.run(
-            ["samtools", "view", "-F", "0x904", bam, c],
+            ["samtools", "view", "-F", "0x904", "-L", bed_file, bam],
             capture_output=True, text=True, check=True,
         ).stdout
         for line in mapq_out.splitlines():
@@ -55,20 +63,27 @@ def region_depth_mapq(contig_list):
                 continue
             mapq_sum += float(fields[4])
             mapq_n += 1
+    finally:
+        Path(bed_file).unlink(missing_ok=True)
 
     mean_depth = total_sum / total_n if total_n else 0.0
     mean_mapq  = mapq_sum / mapq_n if mapq_n else 0.0
     return mean_depth, mean_mapq
 
 
-def region_missingness(contig_list):
-    if not contig_list:
+def region_missingness(fai_row_list):
+    if not fai_row_list:
         return 0.0, 0
-    regions_arg = ",".join(contig_list)
-    out = subprocess.run(
-        ["bcftools", "query", "-r", regions_arg, "-f", "[%GT]\n", vcf],
-        capture_output=True, text=True, check=True,
-    ).stdout
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(row[0] for row in fai_row_list) + "\n")
+        regions_file = f.name
+    try:
+        out = subprocess.run(
+            ["bcftools", "query", "-R", regions_file, "-f", "[%GT]\n", vcf],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    finally:
+        Path(regions_file).unlink(missing_ok=True)
     n_sites = 0
     n_missing = 0
     for line in out.splitlines():
@@ -83,13 +98,13 @@ def region_missingness(contig_list):
 
 
 rows = []
-for region, clist in (("core", core_contigs), ("accessory", acc_contigs)):
-    mean_depth, mean_mapq = region_depth_mapq(clist)
-    missing_rate, n_sites = region_missingness(clist)
+for region, row_list in (("core", core_rows), ("accessory", acc_rows)):
+    mean_depth, mean_mapq = region_depth_mapq(row_list)
+    missing_rate, n_sites = region_missingness(row_list)
     rows.append({
         "sample": sample,
         "region": region,
-        "n_contigs": len(clist),
+        "n_contigs": len(row_list),
         "mean_depth": mean_depth,
         "mean_mapq": mean_mapq,
         "n_sites": n_sites,
