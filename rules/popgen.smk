@@ -33,7 +33,7 @@ rule afs_per_ref:
     resources:
         slurm_partition="short",
         runtime=120,
-        mem_mb=4000,
+        mem_mb=24000,
         cpus=1,
     script:
         "../scripts/afs_per_ref.py"
@@ -58,7 +58,7 @@ rule afs_by_region_augref:
     resources:
         slurm_partition="short",
         runtime=120,
-        mem_mb=4000,
+        mem_mb=24000,
         cpus=1,
     script:
         "../scripts/afs_per_ref.py"
@@ -82,7 +82,7 @@ rule fst_per_ref_pair:
     resources:
         slurm_partition="short",
         runtime=120,
-        mem_mb=4000,
+        mem_mb=8000,
         cpus=1
     shell:
         r"""
@@ -287,7 +287,7 @@ rule heterozygosity_per_ref:
     resources:
         slurm_partition="short",
         runtime=60,
-        mem_mb=4000,
+        mem_mb=24000,
         cpus=1,
     shell:
         r"""
@@ -337,7 +337,7 @@ rule relatedness_per_ref:
     resources:
         slurm_partition="short",
         runtime=120,
-        mem_mb=4000,
+        mem_mb=64000,
         cpus=1,
     shell:
         r"""
@@ -418,7 +418,7 @@ rule pi_per_ref:
     resources:
         slurm_partition="short",
         runtime=120,
-        mem_mb=4000,
+        mem_mb=8000,
         cpus=1
     script:
         "../scripts/compute_pi_per_pop.py"
@@ -447,7 +447,7 @@ rule tajimas_d_per_ref:
     resources:
         slurm_partition="short",
         runtime=120,
-        mem_mb=4000,
+        mem_mb=8000,
         cpus=1
     script:
         "../scripts/compute_tajimas_d_per_pop.py"
