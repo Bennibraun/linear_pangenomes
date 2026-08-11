@@ -2,7 +2,7 @@ executor: slurm
 cores: 100
 
 default-resources:
-  - cpus=1
+  - cpus=2
   - mem_mb=5000
   - runtime=3600
   - slurm_partition=short
