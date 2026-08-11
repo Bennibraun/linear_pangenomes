@@ -43,28 +43,32 @@ def make_bed(fai_row_list):
 
 def region_depth_mapq(bed_file):
     total_sum, total_n = 0.0, 0
-    depth_out = subprocess.run(
+    with subprocess.Popen(
         ["samtools", "depth", "-a", "-b", bed_file, bam],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    for line in depth_out.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 3:
-            continue
-        total_sum += float(parts[2])
-        total_n += 1
+        stdout=subprocess.PIPE, text=True,
+    ) as proc:
+        for line in proc.stdout:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            total_sum += float(parts[2])
+            total_n += 1
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
 
     mapq_sum, mapq_n = 0.0, 0
-    mapq_out = subprocess.run(
+    with subprocess.Popen(
         ["samtools", "view", "-F", "0x904", "-L", bed_file, bam],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    for line in mapq_out.splitlines():
-        fields = line.split("\t")
-        if len(fields) < 5:
-            continue
-        mapq_sum += float(fields[4])
-        mapq_n += 1
+        stdout=subprocess.PIPE, text=True,
+    ) as proc:
+        for line in proc.stdout:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 5:
+                continue
+            mapq_sum += float(fields[4])
+            mapq_n += 1
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
 
     mean_depth = total_sum / total_n if total_n else 0.0
     mean_mapq  = mapq_sum / mapq_n if mapq_n else 0.0
@@ -77,19 +81,21 @@ def region_missingness(bed_file):
     # file ("Could not parse ... using the columns 1,2[,-1]"), and a
     # comma-joined -t/-r argument string hits the OS ARG_MAX ("Argument list
     # too long") once the SV_* contig count gets into the thousands.
-    out = subprocess.run(
-        ["bcftools", "query", "-R", bed_file, "-f", "[%GT]\n", vcf],
-        capture_output=True, text=True, check=True,
-    ).stdout
     n_sites = 0
     n_missing = 0
-    for line in out.splitlines():
-        gt = line.strip()
-        if not gt:
-            continue
-        n_sites += 1
-        if "." in gt:
-            n_missing += 1
+    with subprocess.Popen(
+        ["bcftools", "query", "-R", bed_file, "-f", "[%GT]\n", vcf],
+        stdout=subprocess.PIPE, text=True,
+    ) as proc:
+        for line in proc.stdout:
+            gt = line.strip()
+            if not gt:
+                continue
+            n_sites += 1
+            if "." in gt:
+                n_missing += 1
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
     missing_rate = n_missing / n_sites if n_sites else 0.0
     return missing_rate, n_sites
 
