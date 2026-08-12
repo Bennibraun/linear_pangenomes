@@ -800,9 +800,13 @@ rule pcangsd:
         # -p PREFIX. Convert with plink2 first (plink1.9's chromosome table
         # caps out around 59k distinct nonstandard contig names, which
         # augref's per-SV-insertion contigs exceed).
+        # PLINK BED can't hold multiallelic sites, so split them to biallelic
+        # records first.
+        bcftools norm -m- -Oz -o "$tmpdir/split.vcf.gz" {input.vcf}
+
         # --const-fid 0: VCF has no family info; assign FID=0 to every sample.
         # --allow-extra-chr: tolerate non-numeric contig names (NC_*, NW_*).
-        plink2 --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+        plink2 --vcf "$tmpdir/split.vcf.gz" --make-bed --const-fid 0 --allow-extra-chr \
               --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
@@ -910,7 +914,11 @@ rule pcangsd_by_region:
         tmpdir=$(mktemp -d -p $(dirname {params.prefix}))
         trap "rm -rf $tmpdir" EXIT
 
-        plink2 --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+        # PLINK BED can't hold multiallelic sites, so split them to biallelic
+        # records first.
+        bcftools norm -m- -Oz -o "$tmpdir/split.vcf.gz" {input.vcf}
+
+        plink2 --vcf "$tmpdir/split.vcf.gz" --make-bed --const-fid 0 --allow-extra-chr \
               --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
