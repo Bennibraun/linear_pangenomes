@@ -723,11 +723,17 @@ rule ld_prune_vcf:
         bcftools norm --rm-dup any -Oz -o "$dedup_vcf" {input.vcf}
         bcftools index -t "$dedup_vcf"
 
+        # plink1.9 caps the chromosome table at ~59k distinct nonstandard
+        # contig names ("Too many distinct nonstandard chromosome/contig
+        # names"), which augref blows past (one contig per catalog SV
+        # insertion). plink2 allocates its contig table dynamically and has
+        # no such cap, so use it here instead.
+
         # Step 1: compute LD prune list
-        plink \
+        plink2 \
             --vcf "$dedup_vcf" \
             --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#_$$1_$$2 \
+            --set-missing-var-ids @:#_\$r_\$a \
             --snps-only just-acgt \
             --maf {params.maf} \
             --memory {resources.mem_mb} \
@@ -735,15 +741,15 @@ rule ld_prune_vcf:
             --out "$outdir/prune_tmp"
 
         # Step 2: extract pruned sites → VCF
-        plink \
+        plink2 \
             --vcf "$dedup_vcf" \
             --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#_$$1_$$2 \
+            --set-missing-var-ids @:#_\$r_\$a \
             --snps-only just-acgt \
             --maf {params.maf} \
             --memory {resources.mem_mb} \
             --extract "$outdir/prune_tmp.prune.in" \
-            --recode vcf \
+            --export vcf \
             --out "$outdir/pruned_tmp"
 
         bgzip -f "$outdir/pruned_tmp.vcf"
