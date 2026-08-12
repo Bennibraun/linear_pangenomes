@@ -797,10 +797,12 @@ rule pcangsd:
         trap "rm -rf $tmpdir" EXIT
 
         # pcangsd >=1.x dropped --vcf / --n_eig and now consumes PLINK BED via
-        # -p PREFIX. Convert with plink first.
+        # -p PREFIX. Convert with plink2 first (plink1.9's chromosome table
+        # caps out around 59k distinct nonstandard contig names, which
+        # augref's per-SV-insertion contigs exceed).
         # --const-fid 0: VCF has no family info; assign FID=0 to every sample.
         # --allow-extra-chr: tolerate non-numeric contig names (NC_*, NW_*).
-        plink --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+        plink2 --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
               --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
@@ -908,7 +910,7 @@ rule pcangsd_by_region:
         tmpdir=$(mktemp -d -p $(dirname {params.prefix}))
         trap "rm -rf $tmpdir" EXIT
 
-        plink --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
+        plink2 --vcf {input.vcf} --make-bed --const-fid 0 --allow-extra-chr \
               --memory {resources.mem_mb} \
               --out "$tmpdir/plink"
 
