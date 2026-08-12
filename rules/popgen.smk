@@ -123,7 +123,7 @@ rule f1_concordance_pair:
         "../envs/plotting.yaml"
     resources:
         slurm_partition="short",
-        runtime=120,
+        runtime=480,
         mem_mb=8000,
         cpus=1,
     params:
@@ -783,7 +783,7 @@ rule pcangsd:
     threads: 4
     resources:
         slurm_partition="short",
-        runtime=120,
+        runtime=480,
         mem_mb=16000,
         cpus=4,
     params:
