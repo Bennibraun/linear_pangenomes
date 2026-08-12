@@ -417,7 +417,7 @@ rule pi_per_ref:
         pop_samples=POP_SAMPLES,
     resources:
         slurm_partition="short",
-        runtime=120,
+        runtime=480,
         mem_mb=8000,
         cpus=1
     script:
@@ -446,7 +446,7 @@ rule tajimas_d_per_ref:
         pop_samples=POP_SAMPLES,
     resources:
         slurm_partition="short",
-        runtime=120,
+        runtime=480,
         mem_mb=8000,
         cpus=1
     script:
@@ -709,7 +709,7 @@ rule ld_prune_vcf:
         r2=PCANGSD_LD_R2,
     resources:
         slurm_partition="short",
-        runtime=120,
+        runtime=480,
         mem_mb=8000,
         cpus=1,
     shell:

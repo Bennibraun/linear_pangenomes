@@ -1,5 +1,5 @@
 executor: slurm
-cores: 100
+cores: 50
 
 default-resources:
   - cpus=1
@@ -13,7 +13,7 @@ resources:
 
 slurm-partition-config: partitions.yaml
 
-jobs: 50
+jobs: 25
 latency-wait: 60
 max-jobs-per-second: 5
 max-status-checks-per-second: 1
