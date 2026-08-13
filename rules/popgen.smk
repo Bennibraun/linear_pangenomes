@@ -723,15 +723,52 @@ rule ld_prune_vcf:
         bcftools norm --rm-dup any -Oz -o "$dedup_vcf" {input.vcf}
         bcftools index -t "$dedup_vcf"
 
-        # plink1.9 caps the chromosome table at ~59k distinct nonstandard
-        # contig names ("Too many distinct nonstandard chromosome/contig
-        # names"), which augref blows past (one contig per catalog SV
-        # insertion). plink2 allocates its contig table dynamically and has
-        # no such cap, so use it here instead.
+        # plink's --double-id writes VCF sample names as FID_IID =
+        # "SAMPLE_SAMPLE". Save the original (clean) names now so each branch
+        # below can be reheadered back to them individually before concat --
+        # bcftools concat requires identical sample columns across inputs, and
+        # the accessory pass-through branch (no plink2 involved) never gets
+        # the doubled names in the first place.
+        bcftools query -l {input.vcf} > "$outdir/orig_samples.txt"
 
-        # Step 1: compute LD prune list
+        # Even plink2's dynamic chromosome table caps out around 65k distinct
+        # nonstandard contig names ("Too many distinct nonstandard
+        # chromosome/contig names"), which augref blows well past (one contig
+        # per catalog SV insertion). LD pruning is a no-op on those contigs
+        # anyway -- each has ~1 variant, so there are no neighbors within the
+        # window to prune against. Split core (normal chromosomes) from
+        # accessory (SV_*) contigs: LD-prune core only, carry accessory sites
+        # through with the same MAF/SNP-only filtering but no pruning, then
+        # recombine. For refs with no SV_* contigs (conspec, mc_graph) the
+        # accessory subset is empty and this is equivalent to pruning as before.
+        # Contig name + length come from the VCF's own ##contig header lines
+        # (no separate .fai needed -- this rule is generic over all refs).
+        # A 3-column BED (CHROM/START/END) is the format bcftools view -R
+        # reliably parses via a file; a bare one-column contig-name list
+        # doesn't (see split_ldpruned_vcf_by_region for the same gotcha).
+        core_bed="$outdir/core_contigs.bed"
+        accessory_bed="$outdir/accessory_contigs.bed"
+        bcftools view -h "$dedup_vcf" \
+            | grep '^##contig=' \
+            | sed -E 's/.*ID=([^,>]+).*length=([0-9]+).*/\1\t\2/' \
+            > "$outdir/contigs.tsv"
+        awk -F'\t' '$1 !~ /^SV_/ {{print $1"\t0\t"$2}}' "$outdir/contigs.tsv" > "$core_bed"
+        awk -F'\t' '$1 ~ /^SV_/ {{print $1"\t0\t"$2}}' "$outdir/contigs.tsv" > "$accessory_bed"
+
+        core_vcf="$outdir/core_tmp.vcf.gz"
+        accessory_vcf="$outdir/accessory_tmp.vcf.gz"
+        bcftools view -R "$core_bed" -Oz -o "$core_vcf" "$dedup_vcf"
+        bcftools index -t "$core_vcf"
+        if [ -s "$accessory_bed" ]; then
+            bcftools view -R "$accessory_bed" -Oz -o "$accessory_vcf" "$dedup_vcf"
+        else
+            bcftools view -h "$dedup_vcf" -Oz -o "$accessory_vcf"
+        fi
+        bcftools index -t "$accessory_vcf"
+
+        # Step 1: compute LD prune list (core contigs only)
         plink2 \
-            --vcf "$dedup_vcf" \
+            --vcf "$core_vcf" \
             --double-id --allow-extra-chr \
             --set-missing-var-ids @:#_\$r_\$a \
             --snps-only just-acgt \
@@ -740,9 +777,9 @@ rule ld_prune_vcf:
             --indep-pairwise {params.window} {params.step} {params.r2} \
             --out "$outdir/prune_tmp"
 
-        # Step 2: extract pruned sites → VCF
+        # Step 2: extract pruned core sites → VCF
         plink2 \
-            --vcf "$dedup_vcf" \
+            --vcf "$core_vcf" \
             --double-id --allow-extra-chr \
             --set-missing-var-ids @:#_\$r_\$a \
             --snps-only just-acgt \
@@ -750,21 +787,51 @@ rule ld_prune_vcf:
             --memory {resources.mem_mb} \
             --extract "$outdir/prune_tmp.prune.in" \
             --export vcf \
-            --out "$outdir/pruned_tmp"
-
-        bgzip -f "$outdir/pruned_tmp.vcf"
-
-        # plink --double-id writes VCF sample names as FID_IID = "SAMPLE_SAMPLE".
-        # Restore the original (clean) sample names from the input VCF, in the
-        # same order, so downstream (pcangsd samples.txt, PCA population labels)
-        # matches the manifest sample_ids.
-        bcftools query -l {input.vcf} > "$outdir/orig_samples.txt"
+            --out "$outdir/pruned_core_tmp"
+        bgzip -f "$outdir/pruned_core_tmp.vcf"
         bcftools reheader -s "$outdir/orig_samples.txt" \
-            -o {output.vcf} "$outdir/pruned_tmp.vcf.gz"
+            -o "$outdir/pruned_core_tmp.reheader.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz"
+        mv "$outdir/pruned_core_tmp.reheader.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz"
+        bcftools index -t "$outdir/pruned_core_tmp.vcf.gz"
+
+        # Step 3: MAF/SNP-only filter accessory sites, no LD pruning (each
+        # SV_* contig has ~1 variant, so there's nothing to prune against).
+        # Skip plink2 entirely when there are no accessory contigs (conspec,
+        # mc_graph) -- plink2's behavior on a zero-variant input is
+        # undocumented, so don't rely on it; just emit a header-only VCF.
+        if [ -s "$accessory_bed" ]; then
+            plink2 \
+                --vcf "$accessory_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --export vcf \
+                --out "$outdir/pruned_accessory_tmp"
+            bgzip -f "$outdir/pruned_accessory_tmp.vcf"
+        else
+            bcftools view -h "$accessory_vcf" -Oz -o "$outdir/pruned_accessory_tmp.vcf.gz"
+        fi
+        bcftools reheader -s "$outdir/orig_samples.txt" \
+            -o "$outdir/pruned_accessory_tmp.reheader.vcf.gz" "$outdir/pruned_accessory_tmp.vcf.gz"
+        mv "$outdir/pruned_accessory_tmp.reheader.vcf.gz" "$outdir/pruned_accessory_tmp.vcf.gz"
+        bcftools index -t "$outdir/pruned_accessory_tmp.vcf.gz"
+
+        # Recombine core + accessory. Both branches were already reheadered to
+        # the original clean sample names above, so this concat's output
+        # needs no further reheader -- matches the manifest sample_ids as-is.
+        bcftools concat -a \
+            "$outdir/pruned_core_tmp.vcf.gz" "$outdir/pruned_accessory_tmp.vcf.gz" \
+            -Oz -o {output.vcf}
         tabix -p vcf {output.vcf}
 
-        rm -f "$dedup_vcf" "$dedup_vcf.tbi" "$outdir/pruned_tmp.vcf.gz" "$outdir/orig_samples.txt"
-        rm -f "$outdir/prune_tmp".* "$outdir/pruned_tmp.log" "$outdir/pruned_tmp.nosex"
+        rm -f "$dedup_vcf" "$dedup_vcf.tbi" "$core_vcf" "$core_vcf.tbi" \
+              "$accessory_vcf" "$accessory_vcf.tbi" "$outdir/orig_samples.txt" \
+              "$outdir/contigs.tsv" "$core_bed" "$accessory_bed" \
+              "$outdir/pruned_core_tmp.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz.tbi" \
+              "$outdir/pruned_accessory_tmp.vcf.gz" "$outdir/pruned_accessory_tmp.vcf.gz.tbi"
+        rm -f "$outdir/prune_tmp".* "$outdir/pruned_core_tmp.log" "$outdir/pruned_accessory_tmp.log"
         """
 
 
