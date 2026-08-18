@@ -18,6 +18,8 @@ out_pdf    = snakemake.output.pdf
 out_png    = snakemake.output.png
 sample_pop_str = snakemake.params.sample_pop
 
+is_pruned = open(snakemake.input.pruned_flag).read().strip() == "true"
+
 sample_to_pop = {}
 for pair in sample_pop_str.split("|"):
     k, v = pair.split(",", 1)
@@ -58,7 +60,11 @@ for ax, (title, cov_file, sample_file) in zip(
     ax.set_title(title, fontsize=11)
     sns.despine(ax=ax)
 
-fig.suptitle("PCA: core vs accessory sites — augref", fontsize=13, fontweight="bold")
+title = "PCA: core vs accessory sites — augref"
+if not is_pruned:
+    title += "  [UNPRUNED: N<50 samples, LD pruning skipped]"
+fig.suptitle(title, fontsize=13, fontweight="bold",
+             color="crimson" if not is_pruned else "black")
 legend_handles = [mpatches.Patch(color=pop_color[p], label=p) for p in pop_names]
 fig.legend(handles=legend_handles, title="Population",
            loc="lower center", ncol=len(pop_names),

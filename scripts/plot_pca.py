@@ -7,10 +7,13 @@ import seaborn as sns
 
 cov_file    = snakemake.input.cov
 sample_file = snakemake.input.samples
+pruned_flag_file = snakemake.input.pruned_flag
 out_pdf     = snakemake.output.pdf
 out_png     = snakemake.output.png
 ref_name    = snakemake.params.ref
 sample_pop_str = snakemake.params.sample_pop
+
+is_pruned = open(pruned_flag_file).read().strip() == "true"
 
 sample_to_pop = {}
 for pair in sample_pop_str.split("|"):
@@ -32,7 +35,11 @@ palette     = sns.color_palette("tab10", len(pop_names))
 pop_color   = {p: palette[i] for i, p in enumerate(pop_names)}
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-fig.suptitle("PCA \u2014 " + ref_name, fontsize=13, fontweight="bold")
+title = "PCA \u2014 " + ref_name
+if not is_pruned:
+    title += "  [UNPRUNED: N<50 samples, LD pruning skipped]"
+fig.suptitle(title, fontsize=13, fontweight="bold",
+             color="crimson" if not is_pruned else "black")
 
 for ax, (px, py) in zip(axes, [(0, 1), (0, 2)]):
     for i, (s, pop) in enumerate(zip(samples, populations)):

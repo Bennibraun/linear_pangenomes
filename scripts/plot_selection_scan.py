@@ -24,6 +24,9 @@ out_tsv  = snakemake.output.top_outliers
 ref_name = snakemake.params.ref
 fdr      = snakemake.params.fdr
 
+is_pruned = open(snakemake.input.pruned_flag).read().strip() == "true"
+_unpruned_suffix = "" if is_pruned else "  [UNPRUNED: N<50 samples, LD pruning skipped]"
+
 
 def _empty(msg):
     fig, ax = plt.subplots(figsize=(8, 3))
@@ -86,7 +89,7 @@ ax_qq.legend(frameon=False, fontsize=8)
 
 # --- Panel 2: core vs accessory outlier enrichment (augref), else chi2 hist --
 has_acc = (df["region"] == "accessory").any() and "outlier" in df.columns
-suptitle = f"Selection scan (PCAngsd) — {ref_name}"
+suptitle = f"Selection scan (PCAngsd) — {ref_name}{_unpruned_suffix}"
 if has_acc:
     # Fraction of SNPs that are selection outliers, core vs accessory, with a
     # Fisher's exact test — the augref selection result.
@@ -128,7 +131,7 @@ else:
     ax_hist.set_ylabel("density")
     ax_hist.legend(frameon=False, fontsize=8)
 
-fig.suptitle(suptitle, fontweight="bold")
+fig.suptitle(suptitle, fontweight="bold", color="black" if is_pruned else "crimson")
 sns.despine(fig=fig)
 fig.tight_layout(rect=(0, 0, 1, 0.96))
 fig.savefig(out_pdf, bbox_inches="tight")

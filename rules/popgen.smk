@@ -700,6 +700,7 @@ rule ld_prune_vcf:
     output:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
     conda:
         "../envs/ld_prune.yaml"
     params:
@@ -707,6 +708,8 @@ rule ld_prune_vcf:
         window=PCANGSD_LD_WINDOW,
         step=PCANGSD_LD_STEP,
         r2=PCANGSD_LD_R2,
+        accessory_min_dp=PCANGSD_ACCESSORY_MIN_DP,
+        accessory_min_gq=PCANGSD_ACCESSORY_MIN_GQ,
     resources:
         slurm_partition="short",
         runtime=480,
@@ -766,28 +769,50 @@ rule ld_prune_vcf:
         fi
         bcftools index -t "$accessory_vcf"
 
-        # Step 1: compute LD prune list (core contigs only)
-        plink2 \
-            --vcf "$core_vcf" \
-            --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#_\$r_\$a \
-            --snps-only just-acgt \
-            --maf {params.maf} \
-            --memory {resources.mem_mb} \
-            --indep-pairwise {params.window} {params.step} {params.r2} \
-            --out "$outdir/prune_tmp"
+        # plink2 refuses --indep-pairwise below 50 samples/founders: the r²
+        # estimates it prunes on are too noisy to trust at that cohort size.
+        # Below that threshold, skip LD pruning rather than override the
+        # guardrail (--bad-ld) -- keep MAF/SNP-only filtering only, and leave
+        # correlated markers in. PCA/selection-scan results from an unpruned
+        # small cohort should be caveated accordingly downstream.
+        n_samples=$(bcftools query -l "$core_vcf" | wc -l)
+        if [ "$n_samples" -ge 50 ]; then
+            echo "true" > {output.pruned_flag}
+            # Step 1: compute LD prune list (core contigs only)
+            plink2 \
+                --vcf "$core_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --indep-pairwise {params.window} {params.step} {params.r2} \
+                --out "$outdir/prune_tmp"
 
-        # Step 2: extract pruned core sites → VCF
-        plink2 \
-            --vcf "$core_vcf" \
-            --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#_\$r_\$a \
-            --snps-only just-acgt \
-            --maf {params.maf} \
-            --memory {resources.mem_mb} \
-            --extract "$outdir/prune_tmp.prune.in" \
-            --export vcf \
-            --out "$outdir/pruned_core_tmp"
+            # Step 2: extract pruned core sites → VCF
+            plink2 \
+                --vcf "$core_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --extract "$outdir/prune_tmp.prune.in" \
+                --export vcf \
+                --out "$outdir/pruned_core_tmp"
+        else
+            echo "WARNING: $n_samples samples (<50) for {wildcards.ref} -- skipping LD pruning, MAF/SNP-only filter only" >&2
+            echo "false" > {output.pruned_flag}
+            plink2 \
+                --vcf "$core_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --export vcf \
+                --out "$outdir/pruned_core_tmp"
+        fi
         bgzip -f "$outdir/pruned_core_tmp.vcf"
         bcftools reheader -s "$outdir/orig_samples.txt" \
             -o "$outdir/pruned_core_tmp.reheader.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz"
@@ -796,20 +821,36 @@ rule ld_prune_vcf:
 
         # Step 3: MAF/SNP-only filter accessory sites, no LD pruning (each
         # SV_* contig has ~1 variant, so there's nothing to prune against).
-        # Skip plink2 entirely when there are no accessory contigs (conspec,
-        # mc_graph) -- plink2's behavior on a zero-variant input is
-        # undocumented, so don't rely on it; just emit a header-only VCF.
+        # Done with bcftools, not plink2: augref can carry >65k distinct SV_*
+        # contigs (one per catalog SV insertion), and plink2's nonstandard-
+        # chromosome table hard-caps around 65k regardless of --allow-extra-chr
+        # ("Too many distinct nonstandard chromosome/contig names") -- it dies
+        # partway through with no runtime workaround (only a recompile-time
+        # HIGH_CONTIG_BUILD flag). bcftools has no such per-chromosome table,
+        # so it isn't exposed to this ceiling.
+        # -m2 -M2 -v snps: biallelic SNPs only, matching plink2's
+        # --snps-only just-acgt (drops indels/multiallelics/symbolic alleles).
+        # --set-id replicates --set-missing-var-ids for the (rare) sites
+        # still lacking an ID after upstream normalization.
+        #
+        # SV_* contigs are short and often low/no coverage per sample, so
+        # bcftools call emits single-read genotypes at many sites (DP=1,
+        # GQ<20) alongside ./. at the same position for other samples --
+        # noise, not real presence/absence signal. Mask (set to missing)
+        # per-genotype calls below accessory_min_dp/accessory_min_gq BEFORE
+        # the MAF filter, so a contig's signal comes from its
+        # confidently-genotyped samples only, not diluted/skewed by
+        # single-read miscalls.
+        # Skip entirely when there are no accessory contigs (conspec,
+        # mc_graph); just emit a header-only VCF.
         if [ -s "$accessory_bed" ]; then
-            plink2 \
-                --vcf "$accessory_vcf" \
-                --double-id --allow-extra-chr \
-                --set-missing-var-ids @:#_\$r_\$a \
-                --snps-only just-acgt \
-                --maf {params.maf} \
-                --memory {resources.mem_mb} \
-                --export vcf \
-                --out "$outdir/pruned_accessory_tmp"
-            bgzip -f "$outdir/pruned_accessory_tmp.vcf"
+            bcftools view -m2 -M2 -v snps "$accessory_vcf" \
+                | bcftools filter \
+                    -e "FMT/DP<{params.accessory_min_dp} | FMT/GQ<{params.accessory_min_gq}" \
+                    --set-GTs . \
+                | bcftools view -i "MAF>={params.maf}" \
+                | bcftools annotate --set-id +'%CHROM:%POS_%REF_%FIRST_ALT' \
+                -Oz -o "$outdir/pruned_accessory_tmp.vcf.gz"
         else
             bcftools view -h "$accessory_vcf" -Oz -o "$outdir/pruned_accessory_tmp.vcf.gz"
         fi
@@ -840,6 +881,7 @@ rule pcangsd:
     input:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
     output:
         cov=PCANGSD_OUTDIR / "{ref}/pcangsd.cov",
         selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection",
