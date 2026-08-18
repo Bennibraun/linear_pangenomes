@@ -117,6 +117,13 @@ pcangsd:
   ld_r2: 0.3         # r² threshold
   maf: 0.05          # minor allele frequency filter applied before pruning
   n_pcs: 10          # number of PCs to compute
+  # Accessory (SV_*) contigs are short and often low/no coverage per sample,
+  # so bcftools call emits single-read genotypes at many sites. Genotypes
+  # below these thresholds are set to missing before the MAF filter so PCA/
+  # selection-scan input isn't dominated by low-confidence single-read calls
+  # (matches the allelic_balance min_depth precedent).
+  accessory_min_dp: 5
+  accessory_min_gq: 20
 
 plot:
   outdir: "results/plots"
