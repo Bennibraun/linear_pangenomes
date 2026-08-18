@@ -6,6 +6,7 @@ rule plot_pca:
     input:
         cov=PCANGSD_OUTDIR / "{ref}/pcangsd.cov",
         samples=PCANGSD_OUTDIR / "{ref}/samples.txt",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
     output:
         pdf=PLOT_OUTDIR / "pca/{ref}_pca.pdf",
         png=PLOT_OUTDIR / "pca/{ref}_pca.png",
@@ -26,6 +27,7 @@ rule plot_pca:
 rule plot_selection_scan:
     input:
         outliers=PCANGSD_OUTDIR / "{ref}/fst_outliers.tsv",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
     output:
         pdf=PLOT_OUTDIR / "selection/{ref}_selection_scan.pdf",
         png=PLOT_OUTDIR / "selection/{ref}_selection_scan.png",
@@ -188,6 +190,10 @@ rule plot_pca_by_region:
         samples_core=PCANGSD_OUTDIR / "augref_core/samples.txt",
         cov_accessory=PCANGSD_OUTDIR / "augref_accessory/pcangsd.cov",
         samples_accessory=PCANGSD_OUTDIR / "augref_accessory/samples.txt",
+        # augref_core/accessory are subset from augref's own ldpruned VCF
+        # (split_ldpruned_vcf_by_region), so they inherit augref's pruned status
+        # rather than computing their own.
+        pruned_flag=PCANGSD_OUTDIR / "augref/pruned.flag",
     output:
         pdf=PLOT_OUTDIR / "pca/augref_pca_by_region.pdf",
         png=PLOT_OUTDIR / "pca/augref_pca_by_region.png",

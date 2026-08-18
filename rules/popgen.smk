@@ -700,6 +700,7 @@ rule ld_prune_vcf:
     output:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
     conda:
         "../envs/ld_prune.yaml"
     params:
@@ -766,28 +767,50 @@ rule ld_prune_vcf:
         fi
         bcftools index -t "$accessory_vcf"
 
-        # Step 1: compute LD prune list (core contigs only)
-        plink2 \
-            --vcf "$core_vcf" \
-            --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#_\$r_\$a \
-            --snps-only just-acgt \
-            --maf {params.maf} \
-            --memory {resources.mem_mb} \
-            --indep-pairwise {params.window} {params.step} {params.r2} \
-            --out "$outdir/prune_tmp"
+        # plink2 refuses --indep-pairwise below 50 samples/founders: the r²
+        # estimates it prunes on are too noisy to trust at that cohort size.
+        # Below that threshold, skip LD pruning rather than override the
+        # guardrail (--bad-ld) -- keep MAF/SNP-only filtering only, and leave
+        # correlated markers in. PCA/selection-scan results from an unpruned
+        # small cohort should be caveated accordingly downstream.
+        n_samples=$(bcftools query -l "$core_vcf" | wc -l)
+        if [ "$n_samples" -ge 50 ]; then
+            echo "true" > {output.pruned_flag}
+            # Step 1: compute LD prune list (core contigs only)
+            plink2 \
+                --vcf "$core_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --indep-pairwise {params.window} {params.step} {params.r2} \
+                --out "$outdir/prune_tmp"
 
-        # Step 2: extract pruned core sites → VCF
-        plink2 \
-            --vcf "$core_vcf" \
-            --double-id --allow-extra-chr \
-            --set-missing-var-ids @:#_\$r_\$a \
-            --snps-only just-acgt \
-            --maf {params.maf} \
-            --memory {resources.mem_mb} \
-            --extract "$outdir/prune_tmp.prune.in" \
-            --export vcf \
-            --out "$outdir/pruned_core_tmp"
+            # Step 2: extract pruned core sites → VCF
+            plink2 \
+                --vcf "$core_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --extract "$outdir/prune_tmp.prune.in" \
+                --export vcf \
+                --out "$outdir/pruned_core_tmp"
+        else
+            echo "WARNING: $n_samples samples (<50) for {wildcards.ref} -- skipping LD pruning, MAF/SNP-only filter only" >&2
+            echo "false" > {output.pruned_flag}
+            plink2 \
+                --vcf "$core_vcf" \
+                --double-id --allow-extra-chr \
+                --set-missing-var-ids @:#_\$r_\$a \
+                --snps-only just-acgt \
+                --maf {params.maf} \
+                --memory {resources.mem_mb} \
+                --export vcf \
+                --out "$outdir/pruned_core_tmp"
+        fi
         bgzip -f "$outdir/pruned_core_tmp.vcf"
         bcftools reheader -s "$outdir/orig_samples.txt" \
             -o "$outdir/pruned_core_tmp.reheader.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz"
@@ -840,6 +863,7 @@ rule pcangsd:
     input:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
         tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
     output:
         cov=PCANGSD_OUTDIR / "{ref}/pcangsd.cov",
         selection=PCANGSD_OUTDIR / "{ref}/pcangsd.selection",
