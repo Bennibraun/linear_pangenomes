@@ -241,6 +241,7 @@ PCANGSD_MAF = PCANGSD_CFG.get("maf", 0.05)
 PCANGSD_N_PCS = PCANGSD_CFG.get("n_pcs", 10)
 PCANGSD_ACCESSORY_MIN_DP = PCANGSD_CFG.get("accessory_min_dp", 5)
 PCANGSD_ACCESSORY_MIN_GQ = PCANGSD_CFG.get("accessory_min_gq", 20)
+PCANGSD_ACCESSORY_LD_MIN_LEN = PCANGSD_CFG.get("accessory_ld_min_len", 2000)
 
 PLOT_OUTDIR = Path(config.get("plot", {}).get("outdir", "results/plots"))
 

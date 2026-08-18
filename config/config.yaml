@@ -124,6 +124,12 @@ pcangsd:
   # (matches the allelic_balance min_depth precedent).
   accessory_min_dp: 5
   accessory_min_gq: 20
+  # SV_* contigs >= this length go through real LD-pruning (plink2, folded
+  # in with core); shorter contigs collapse to 1 representative variant
+  # instead (variants on a short flanked-SV fragment are essentially
+  # guaranteed to be in near-total LD with each other, so pruning them
+  # isn't worth it -- see ld_prune_vcf).
+  accessory_ld_min_len: 2000
 
 plot:
   outdir: "results/plots"
