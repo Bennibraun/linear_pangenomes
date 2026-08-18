@@ -692,74 +692,59 @@ rule roh_summary:
 # ---------------------------------------------------------------------------
 # LD pruning + PCAngsd PCA + selection scan
 # ---------------------------------------------------------------------------
-rule ld_prune_vcf:
-    """LD-prune the merged VCF with plink for use in PCAngsd."""
+rule split_ld_prune_contigs:
+    """Split the merged VCF into three contig groups ahead of ld_prune_vcf /
+    ld_prune_accessory_small: core (normal chromosomes), accessory_big (SV_*
+    contigs long enough for real LD-pruning to be worth it), and
+    accessory_small (SV_* contigs too short for that -- see ld_prune_vcf).
+
+    SV_* contigs are flanked SV sequence (sv_calling.flank bp on each side,
+    per config), so they are NOT guaranteed to carry only ~1 variant:
+    multi-SNP/indel clusters within one contig are tightly linked (same short
+    fragment, no realistic within-contig recombination), but real LD-pruning
+    still matters once a contig is long enough for that linkage assumption to
+    be worth checking rather than just assumed. accessory_big contigs
+    (>= pcangsd.accessory_ld_min_len) go through the same plink2 LD-prune
+    pass as core; accessory_small contigs go through
+    ld_prune_accessory_small's collapse-to-1-variant-per-contig instead.
+
+    For refs with no SV_* contigs (conspec, mc_graph) both accessory subsets
+    are empty and downstream is equivalent to pruning core alone.
+    """
     input:
         vcf=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz",
         tbi=VC_OUTDIR / "bcftools/{ref}/combined/merged.vcf.gz.tbi",
     output:
-        vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
-        tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
-        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
+        core_vcf=temp(PCANGSD_OUTDIR / "{ref}/core_tmp.vcf.gz"),
+        core_tbi=temp(PCANGSD_OUTDIR / "{ref}/core_tmp.vcf.gz.tbi"),
+        accessory_small_vcf=temp(PCANGSD_OUTDIR / "{ref}/accessory_small_tmp.vcf.gz"),
+        accessory_small_tbi=temp(PCANGSD_OUTDIR / "{ref}/accessory_small_tmp.vcf.gz.tbi"),
+        orig_samples=temp(PCANGSD_OUTDIR / "{ref}/orig_samples.txt"),
     conda:
         "../envs/ld_prune.yaml"
     params:
-        maf=PCANGSD_MAF,
-        window=PCANGSD_LD_WINDOW,
-        step=PCANGSD_LD_STEP,
-        r2=PCANGSD_LD_R2,
-        accessory_min_dp=PCANGSD_ACCESSORY_MIN_DP,
-        accessory_min_gq=PCANGSD_ACCESSORY_MIN_GQ,
         accessory_ld_min_len=PCANGSD_ACCESSORY_LD_MIN_LEN,
     resources:
         slurm_partition="short",
-        runtime=480,
+        runtime=240,
         mem_mb=8000,
         cpus=1,
     shell:
         r"""
         set -euo pipefail
-        outdir=$(dirname {output.vcf})
+        outdir=$(dirname {output.core_vcf})
         mkdir -p "$outdir"
 
-        # Pre-filter: assign unique IDs and remove duplicate positions with bcftools
+        # Assign unique IDs and remove duplicate positions.
         dedup_vcf="$outdir/dedup_tmp.vcf.gz"
         bcftools norm --rm-dup any -Oz -o "$dedup_vcf" {input.vcf}
         bcftools index -t "$dedup_vcf"
 
         # plink's --double-id writes VCF sample names as FID_IID =
-        # "SAMPLE_SAMPLE". Save the original (clean) names now so each branch
-        # below can be reheadered back to them individually before concat --
-        # bcftools concat requires identical sample columns across inputs, and
-        # the accessory pass-through branch (no plink2 involved) never gets
-        # the doubled names in the first place.
-        bcftools query -l {input.vcf} > "$outdir/orig_samples.txt"
+        # "SAMPLE_SAMPLE". Save the original (clean) names now so downstream
+        # rules can reheader back to them before recombining.
+        bcftools query -l {input.vcf} > {output.orig_samples}
 
-        # Even plink2's dynamic chromosome table caps out around 65k distinct
-        # nonstandard contig names ("Too many distinct nonstandard
-        # chromosome/contig names"), which augref blows well past (one contig
-        # per catalog SV insertion). SV_* contigs are flanked SV sequence
-        # (sv_calling.flank bp on each side, per config), so they're NOT
-        # guaranteed to carry only ~1 variant -- multi-SNP/indel clusters
-        # within one contig are tightly linked (same short fragment, no
-        # realistic within-contig recombination) but real LD-pruning still
-        # matters once a contig is long enough for that linkage assumption to
-        # be worth checking rather than just assumed.
-        #
-        # Split into three groups instead of two:
-        #   - core: normal chromosomes -- always LD-pruned via plink2.
-        #   - accessory_big: SV_* contigs >= {accessory_ld_min_len}bp -- long
-        #     enough that within-contig recombination/independent variants
-        #     are plausible, so fold into the same plink2 LD-prune pass as
-        #     core (real r² math, not an assumption).
-        #   - accessory_small: SV_* contigs < {accessory_ld_min_len}bp -- short
-        #     enough that all variants on one contig are essentially
-        #     guaranteed to be in near-total LD (same fragment). Collapse to
-        #     1 representative variant per contig instead of pruning, so a
-        #     multi-SNP contig can't be overweighted in PCA/selection-scan
-        #     input relative to a true single-variant contig.
-        # For refs with no SV_* contigs (conspec, mc_graph) both accessory
-        # subsets are empty and this is equivalent to pruning core alone.
         # Contig name + length come from the VCF's own ##contig header lines
         # (no separate .fai needed -- this rule is generic over all refs).
         # A 3-column BED (CHROM/START/END) is the format bcftools view -R
@@ -780,19 +765,54 @@ rule ld_prune_vcf:
             '$1 ~ /^SV_/ && $2 < minlen {{print $1"\t0\t"$2}}' \
             "$outdir/contigs.tsv" > "$accessory_small_bed"
 
-        core_vcf="$outdir/core_tmp.vcf.gz"
-        accessory_small_vcf="$outdir/accessory_small_tmp.vcf.gz"
         # accessory_big sites are pruned together with core (same plink2
-        # pass), so fold their BED into core's before extracting.
+        # pass in ld_prune_vcf), so fold their BED into core's here.
         cat "$core_bed" "$accessory_big_bed" > "$outdir/core_plus_accessory_big.bed"
-        bcftools view -R "$outdir/core_plus_accessory_big.bed" -Oz -o "$core_vcf" "$dedup_vcf"
-        bcftools index -t "$core_vcf"
+        bcftools view -R "$outdir/core_plus_accessory_big.bed" -Oz -o {output.core_vcf} "$dedup_vcf"
+        bcftools index -t {output.core_vcf}
         if [ -s "$accessory_small_bed" ]; then
-            bcftools view -R "$accessory_small_bed" -Oz -o "$accessory_small_vcf" "$dedup_vcf"
+            bcftools view -R "$accessory_small_bed" -Oz -o {output.accessory_small_vcf} "$dedup_vcf"
         else
-            bcftools view -h "$dedup_vcf" -Oz -o "$accessory_small_vcf"
+            bcftools view -h "$dedup_vcf" -Oz -o {output.accessory_small_vcf}
         fi
-        bcftools index -t "$accessory_small_vcf"
+        bcftools index -t {output.accessory_small_vcf}
+
+        rm -f "$dedup_vcf" "$dedup_vcf.tbi" "$outdir/contigs.tsv" \
+              "$core_bed" "$accessory_big_bed" "$accessory_small_bed" \
+              "$outdir/core_plus_accessory_big.bed"
+        """
+
+
+rule ld_prune_vcf:
+    """LD-prune the core+accessory_big VCF with plink2. accessory_small sites
+    (too short for LD-pruning to be worth it) are handled separately by
+    ld_prune_accessory_small and recombined here."""
+    input:
+        core_vcf=PCANGSD_OUTDIR / "{ref}/core_tmp.vcf.gz",
+        core_tbi=PCANGSD_OUTDIR / "{ref}/core_tmp.vcf.gz.tbi",
+        accessory_small_pruned=PCANGSD_OUTDIR / "{ref}/pruned_accessory_small.vcf.gz",
+        orig_samples=PCANGSD_OUTDIR / "{ref}/orig_samples.txt",
+    output:
+        vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz.tbi",
+        pruned_flag=PCANGSD_OUTDIR / "{ref}/pruned.flag",
+    conda:
+        "../envs/ld_prune.yaml"
+    params:
+        maf=PCANGSD_MAF,
+        window=PCANGSD_LD_WINDOW,
+        step=PCANGSD_LD_STEP,
+        r2=PCANGSD_LD_R2,
+    resources:
+        slurm_partition="short",
+        runtime=480,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        outdir=$(dirname {output.vcf})
+        mkdir -p "$outdir"
 
         # plink2 refuses --indep-pairwise below 50 samples/founders: the r²
         # estimates it prunes on are too noisy to trust at that cohort size.
@@ -800,12 +820,12 @@ rule ld_prune_vcf:
         # guardrail (--bad-ld) -- keep MAF/SNP-only filtering only, and leave
         # correlated markers in. PCA/selection-scan results from an unpruned
         # small cohort should be caveated accordingly downstream.
-        n_samples=$(bcftools query -l "$core_vcf" | wc -l)
+        n_samples=$(bcftools query -l {input.core_vcf} | wc -l)
         if [ "$n_samples" -ge 50 ]; then
             echo "true" > {output.pruned_flag}
-            # Step 1: compute LD prune list (core contigs only)
+            # Step 1: compute LD prune list
             plink2 \
-                --vcf "$core_vcf" \
+                --vcf {input.core_vcf} \
                 --double-id --allow-extra-chr \
                 --set-missing-var-ids @:#_\$r_\$a \
                 --snps-only just-acgt \
@@ -814,9 +834,9 @@ rule ld_prune_vcf:
                 --indep-pairwise {params.window} {params.step} {params.r2} \
                 --out "$outdir/prune_tmp"
 
-            # Step 2: extract pruned core sites → VCF
+            # Step 2: extract pruned sites → VCF
             plink2 \
-                --vcf "$core_vcf" \
+                --vcf {input.core_vcf} \
                 --double-id --allow-extra-chr \
                 --set-missing-var-ids @:#_\$r_\$a \
                 --snps-only just-acgt \
@@ -829,7 +849,7 @@ rule ld_prune_vcf:
             echo "WARNING: $n_samples samples (<50) for {wildcards.ref} -- skipping LD pruning, MAF/SNP-only filter only" >&2
             echo "false" > {output.pruned_flag}
             plink2 \
-                --vcf "$core_vcf" \
+                --vcf {input.core_vcf} \
                 --double-id --allow-extra-chr \
                 --set-missing-var-ids @:#_\$r_\$a \
                 --snps-only just-acgt \
@@ -839,97 +859,47 @@ rule ld_prune_vcf:
                 --out "$outdir/pruned_core_tmp"
         fi
         bgzip -f "$outdir/pruned_core_tmp.vcf"
-        bcftools reheader -s "$outdir/orig_samples.txt" \
+        bcftools reheader -s {input.orig_samples} \
             -o "$outdir/pruned_core_tmp.reheader.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz"
         mv "$outdir/pruned_core_tmp.reheader.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz"
         bcftools index -t "$outdir/pruned_core_tmp.vcf.gz"
 
-        # Step 3: filter + collapse accessory_small sites (contigs too short
-        # for real LD-pruning to be worth it -- see split rationale above).
-        # Done with bcftools, not plink2: augref can carry >65k distinct SV_*
-        # contigs (one per catalog SV insertion), and plink2's nonstandard-
-        # chromosome table hard-caps around 65k regardless of --allow-extra-chr
-        # ("Too many distinct nonstandard chromosome/contig names") -- it dies
-        # partway through with no runtime workaround (only a recompile-time
-        # HIGH_CONTIG_BUILD flag). bcftools has no such per-chromosome table,
-        # so it isn't exposed to this ceiling.
-        # -m2 -M2 -v snps: biallelic SNPs only, matching plink2's
-        # --snps-only just-acgt (drops indels/multiallelics/symbolic alleles).
-        # --set-id replicates --set-missing-var-ids for the (rare) sites
-        # still lacking an ID after upstream normalization.
-        #
-        # SV_* contigs are short and often low/no coverage per sample, so
-        # bcftools call emits single-read genotypes at many sites (DP=1,
-        # GQ<20) alongside ./. at the same position for other samples --
-        # noise, not real presence/absence signal. Mask (set to missing)
-        # per-genotype calls below accessory_min_dp/accessory_min_gq BEFORE
-        # the MAF filter, so a contig's signal comes from its
-        # confidently-genotyped samples only, not diluted/skewed by
-        # single-read miscalls.
-        #
-        # Then collapse to 1 representative variant per contig: keep the site
-        # with the most non-missing genotypes (post-masking) as a simple
-        # quality tiebreak, since all variants on one short flanked-SV
-        # fragment are assumed near-perfectly linked (see rationale above) --
-        # this is NOT LD-pruning, it's a stand-in that avoids overweighting a
-        # multi-SNP contig relative to a true single-variant one.
-        # Skip entirely when there are no accessory_small contigs (conspec,
-        # mc_graph); just emit a header-only VCF.
-        if [ -s "$accessory_small_bed" ]; then
-            bcftools view -m2 -M2 -v snps "$accessory_small_vcf" \
-                | bcftools filter \
-                    -e "FMT/DP<{params.accessory_min_dp} | FMT/GQ<{params.accessory_min_gq}" \
-                    --set-GTs . \
-                | bcftools view -i "MAF>={params.maf}" \
-                | bcftools annotate --set-id +'%CHROM:%POS_%REF_%FIRST_ALT' \
-                -Oz -o "$outdir/accessory_small_filtered.vcf.gz"
-            bcftools index -t "$outdir/accessory_small_filtered.vcf.gz"
-
-            # Rank sites per contig by non-missing genotype count (desc), keep
-            # the top one. bcftools query gives one line per site with its
-            # CHROM/POS/ID and each sample's GT; count total GT fields minus
-            # missing ("./.") ones to get the non-missing count.
-            bcftools query -f '%CHROM\t%POS\t%ID\t[%GT,]\n' "$outdir/accessory_small_filtered.vcf.gz" \
-                | awk -F'\t' '{{
-                    gsub(/,$/, "", $4);
-                    total=split($4, gts, ",");
-                    missing=gsub(/\.\/\./, "&", $4);
-                    print $1"\t"$2"\t"$3"\t"(total-missing)
-                  }}' \
-                | sort -k1,1 -k4,4nr \
-                | awk -F'\t' '!seen[$1]++ {{print $3}}' \
-                > "$outdir/accessory_small_keep_ids.txt"
-            bcftools view -i 'ID=@'"$outdir/accessory_small_keep_ids.txt" \
-                "$outdir/accessory_small_filtered.vcf.gz" \
-                -Oz -o "$outdir/pruned_accessory_small_tmp.vcf.gz"
-        else
-            bcftools view -h "$accessory_small_vcf" -Oz -o "$outdir/pruned_accessory_small_tmp.vcf.gz"
-        fi
-        bcftools reheader -s "$outdir/orig_samples.txt" \
-            -o "$outdir/pruned_accessory_small_tmp.reheader.vcf.gz" "$outdir/pruned_accessory_small_tmp.vcf.gz"
-        mv "$outdir/pruned_accessory_small_tmp.reheader.vcf.gz" "$outdir/pruned_accessory_small_tmp.vcf.gz"
-        bcftools index -t "$outdir/pruned_accessory_small_tmp.vcf.gz"
-
-        # Recombine core+accessory_big (LD-pruned together) with
-        # accessory_small (collapsed to 1 variant/contig). All branches were
-        # already reheadered to the original clean sample names above, so
-        # this concat's output needs no further reheader -- matches the
-        # manifest sample_ids as-is.
+        # Recombine with accessory_small (already filtered, collapsed to 1
+        # variant/contig, and reheadered by ld_prune_accessory_small).
         bcftools concat -a \
-            "$outdir/pruned_core_tmp.vcf.gz" "$outdir/pruned_accessory_small_tmp.vcf.gz" \
+            "$outdir/pruned_core_tmp.vcf.gz" {input.accessory_small_pruned} \
             -Oz -o {output.vcf}
         tabix -p vcf {output.vcf}
 
-        rm -f "$dedup_vcf" "$dedup_vcf.tbi" "$core_vcf" "$core_vcf.tbi" \
-              "$accessory_small_vcf" "$accessory_small_vcf.tbi" "$outdir/orig_samples.txt" \
-              "$outdir/contigs.tsv" "$core_bed" "$accessory_big_bed" "$accessory_small_bed" \
-              "$outdir/core_plus_accessory_big.bed" \
-              "$outdir/accessory_small_filtered.vcf.gz" "$outdir/accessory_small_filtered.vcf.gz.tbi" \
-              "$outdir/accessory_small_keep_ids.txt" \
-              "$outdir/pruned_core_tmp.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz.tbi" \
-              "$outdir/pruned_accessory_small_tmp.vcf.gz" "$outdir/pruned_accessory_small_tmp.vcf.gz.tbi"
-        rm -f "$outdir/prune_tmp".* "$outdir/pruned_core_tmp.log" "$outdir/pruned_accessory_small_tmp.log"
+        rm -f "$outdir/pruned_core_tmp.vcf.gz" "$outdir/pruned_core_tmp.vcf.gz.tbi"
+        rm -f "$outdir/prune_tmp".* "$outdir/pruned_core_tmp.log"
         """
+
+
+rule ld_prune_accessory_small:
+    """Filter and collapse accessory_small SV_* sites (see
+    split_ld_prune_contigs and scripts/ld_prune_accessory_small.py for
+    rationale) into 1 representative variant per contig. bcftools-only
+    (no plink2), so sample names are untouched -- no reheader needed before
+    ld_prune_vcf recombines this with the pruned core+accessory_big VCF."""
+    input:
+        vcf=PCANGSD_OUTDIR / "{ref}/accessory_small_tmp.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "{ref}/accessory_small_tmp.vcf.gz.tbi",
+    output:
+        vcf=PCANGSD_OUTDIR / "{ref}/pruned_accessory_small.vcf.gz",
+    conda:
+        "../envs/ld_prune.yaml"
+    params:
+        min_dp=PCANGSD_ACCESSORY_MIN_DP,
+        min_gq=PCANGSD_ACCESSORY_MIN_GQ,
+        maf=PCANGSD_MAF,
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=4000,
+        cpus=1,
+    script:
+        "../scripts/ld_prune_accessory_small.py"
 
 
 rule pcangsd:
