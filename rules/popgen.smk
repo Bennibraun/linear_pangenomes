@@ -229,7 +229,7 @@ rule per_ref_summary:
         min_sv_size=SV_MIN_SIZE,
     resources:
         slurm_partition="short",
-        runtime=120,
+        runtime=480,
         mem_mb=8000,
         cpus=1,
     script:
