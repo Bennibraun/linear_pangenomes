@@ -34,6 +34,8 @@ here before recombining in ld_prune_vcf.
 import subprocess
 from pathlib import Path
 
+import pysam
+
 in_vcf = snakemake.input.vcf
 out_vcf = Path(snakemake.output.vcf)
 min_dp = snakemake.params.min_dp
@@ -81,34 +83,42 @@ with filtered_vcf.open("wb") as out_fh:
 run(["bcftools", "index", "-t", str(filtered_vcf)])
 
 # --- Step 5: collapse to 1 representative variant per contig -------------
-# For each contig, keep the site ID with the most non-missing genotypes.
-query = subprocess.run(
-    ["bcftools", "query", "-f", "%CHROM\t%POS\t%ID\t[%GT,]\n", str(filtered_vcf)],
-    check=True, capture_output=True, text=True,
-)
+# For each contig, keep the record with the most non-missing genotypes.
+# Done with pysam (not `bcftools view -i 'ID=@file'`) -- that filter
+# expression failed outright on this bcftools build ("Could not read:
+# @file"), so record selection is done directly here instead of relying on
+# bcftools's -i list-membership syntax.
+def _is_missing_gt(sample):
+    """True if a sample's genotype is fully missing (./. or equivalent).
+    pysam's allele_indices is either None (whole-genotype-missing) or a
+    tuple that may itself contain None per-allele -- handle both rather
+    than assume one shape."""
+    idx = sample.allele_indices
+    if idx is None:
+        return True
+    return all(a is None for a in idx)
 
-best_per_contig = {}  # chrom -> (n_non_missing, id)
-for line in query.stdout.splitlines():
-    chrom, pos, var_id, gt_field = line.rstrip("\n").split("\t")
-    gts = gt_field.rstrip(",").split(",")
-    n_non_missing = sum(1 for gt in gts if gt != "./.")
-    current_best = best_per_contig.get(chrom)
-    if current_best is None or n_non_missing > current_best[0]:
-        best_per_contig[chrom] = (n_non_missing, var_id)
 
-keep_ids = [var_id for _, var_id in best_per_contig.values()]
+with pysam.VariantFile(str(filtered_vcf)) as vf:
+    best_per_contig = {}  # chrom -> (n_non_missing, record.id)
+    for rec in vf:
+        n_non_missing = sum(
+            1 for sample in rec.samples.values() if not _is_missing_gt(sample)
+        )
+        current_best = best_per_contig.get(rec.chrom)
+        if current_best is None or n_non_missing > current_best[0]:
+            best_per_contig[rec.chrom] = (n_non_missing, rec.id)
 
-if keep_ids:
-    keep_ids_path = tmp_dir / "accessory_small_keep_ids.txt"
-    keep_ids_path.write_text("\n".join(keep_ids) + "\n")
-    run([
-        "bcftools", "view", "-i", f"ID=@{keep_ids_path}",
-        str(filtered_vcf), "-Oz", "-o", str(out_vcf),
-    ])
-    keep_ids_path.unlink()
-else:
-    # No accessory_small sites survived filtering -- emit a header-only VCF.
-    run(["bcftools", "view", "-h", str(filtered_vcf), "-Oz", "-o", str(out_vcf)])
+keep_ids = {var_id for _, var_id in best_per_contig.values()}
+
+tmp_out_vcf = tmp_dir / "accessory_small_collapsed.vcf.gz"
+with pysam.VariantFile(str(filtered_vcf)) as vf_in:
+    with pysam.VariantFile(str(tmp_out_vcf), "wz", header=vf_in.header) as vf_out:
+        for rec in vf_in:
+            if rec.id in keep_ids:
+                vf_out.write(rec)
+
+tmp_out_vcf.rename(out_vcf)
 
 # ld_prune_vcf's bcftools concat needs this indexed.
 run(["bcftools", "index", "-t", str(out_vcf)])
