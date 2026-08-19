@@ -67,7 +67,9 @@ maf_filtered = subprocess.Popen(
 masked.stdout.close()
 with filtered_vcf.open("wb") as out_fh:
     id_set = subprocess.Popen(
-        ["bcftools", "annotate", "--set-id", "+%CHROM:%POS_%REF_%FIRST_ALT", "-Oz"],
+        # Underscores immediately after a %TAG are parsed as part of the tag
+        # name (bcftools tried to look up INFO/REF_ here) unless escaped.
+        ["bcftools", "annotate", "--set-id", r"+%CHROM:%POS\_%REF\_%FIRST_ALT", "-Oz"],
         stdin=maf_filtered.stdout,
         stdout=out_fh,
     )
