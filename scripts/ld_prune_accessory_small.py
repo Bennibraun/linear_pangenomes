@@ -108,5 +108,8 @@ else:
     # No accessory_small sites survived filtering -- emit a header-only VCF.
     run(["bcftools", "view", "-h", str(filtered_vcf), "-Oz", "-o", str(out_vcf)])
 
+# ld_prune_vcf's bcftools concat needs this indexed.
+run(["bcftools", "index", "-t", str(out_vcf)])
+
 filtered_vcf.unlink()
 Path(str(filtered_vcf) + ".tbi").unlink(missing_ok=True)

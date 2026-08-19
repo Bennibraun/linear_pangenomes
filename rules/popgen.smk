@@ -791,6 +791,7 @@ rule ld_prune_vcf:
         core_vcf=PCANGSD_OUTDIR / "{ref}/core_tmp.vcf.gz",
         core_tbi=PCANGSD_OUTDIR / "{ref}/core_tmp.vcf.gz.tbi",
         accessory_small_pruned=PCANGSD_OUTDIR / "{ref}/pruned_accessory_small.vcf.gz",
+        accessory_small_pruned_tbi=PCANGSD_OUTDIR / "{ref}/pruned_accessory_small.vcf.gz.tbi",
         orig_samples=PCANGSD_OUTDIR / "{ref}/orig_samples.txt",
     output:
         vcf=PCANGSD_OUTDIR / "{ref}/merged.ldpruned.vcf.gz",
@@ -887,6 +888,7 @@ rule ld_prune_accessory_small:
         tbi=PCANGSD_OUTDIR / "{ref}/accessory_small_tmp.vcf.gz.tbi",
     output:
         vcf=PCANGSD_OUTDIR / "{ref}/pruned_accessory_small.vcf.gz",
+        tbi=PCANGSD_OUTDIR / "{ref}/pruned_accessory_small.vcf.gz.tbi",
     conda:
         "../envs/ld_prune.yaml"
     params:
