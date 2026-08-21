@@ -58,6 +58,12 @@ CHUNK_SIZE = 50000
 
 
 def run(cmd, **kwargs):
+    # plink2 and bcftools log to STDOUT. This module's own stdout is reserved
+    # for the two result paths (see main), and callers capture it with $(...),
+    # so send every child's stdout to stderr unless the caller redirects it
+    # (e.g. to a results file). Otherwise a plink2 banner line would be mistaken
+    # for the plink prefix downstream.
+    kwargs.setdefault("stdout", sys.stderr)
     subprocess.run(cmd, check=True, **kwargs)
 
 

@@ -939,12 +939,14 @@ rule pcangsd:
         # far more than plink2's ~65k distinct-nonstandard-contig cap, so the
         # helper rewrites CHROM/POS into a bounded set of placeholder
         # chromosomes before --make-bed (see scripts/vcf_to_plink_bucketed.py).
-        # It returns the plink prefix and a real-coords table (true contig
-        # names, in .bim row order) on two lines.
-        conv_out=$(python {workflow.basedir}/scripts/vcf_to_plink_bucketed.py \
-            --vcf {input.vcf} --tmpdir "$tmpdir" --memory-mb {resources.mem_mb})
-        plink_prefix=$(echo "$conv_out" | sed -n '1p')
-        real_coords=$(echo "$conv_out" | sed -n '2p')
+        # It writes the fileset to $tmpdir/plink.* and the real-coords table
+        # (true contig names, in .bim row order) to $tmpdir/real_coords.tsv.
+        # (Don't capture its stdout for the paths -- plink2/bcftools log to
+        # stdout, so the paths are deterministic here instead.)
+        python {workflow.basedir}/scripts/vcf_to_plink_bucketed.py \
+            --vcf {input.vcf} --tmpdir "$tmpdir" --memory-mb {resources.mem_mb}
+        plink_prefix="$tmpdir/plink"
+        real_coords="$tmpdir/real_coords.tsv"
 
         # Sample names for the PCA plot. Take them from the VCF (bcftools gives
         # them in the same order plink uses). Older LD-pruned VCFs carry plink's
@@ -1053,12 +1055,12 @@ rule pcangsd_by_region:
         # Convert to PLINK BED, remapping CHROM/POS into bounded placeholder
         # chunks so plink2 stays under its ~65k distinct-contig cap (the
         # augref_accessory region is *all* SV_* contigs, so this is essential
-        # here). See
-        # scripts/vcf_to_plink_bucketed.py; it returns the plink prefix and a
-        # real-coords table (unused here -- no snp_coords output).
-        conv_out=$(python {workflow.basedir}/scripts/vcf_to_plink_bucketed.py \
-            --vcf {input.vcf} --tmpdir "$tmpdir" --memory-mb {resources.mem_mb})
-        plink_prefix=$(echo "$conv_out" | sed -n '1p')
+        # here). See scripts/vcf_to_plink_bucketed.py; it writes $tmpdir/plink.*
+        # (real_coords.tsv is also written but unused here -- no snp_coords
+        # output). Don't capture its stdout: plink2/bcftools log there.
+        python {workflow.basedir}/scripts/vcf_to_plink_bucketed.py \
+            --vcf {input.vcf} --tmpdir "$tmpdir" --memory-mb {resources.mem_mb}
+        plink_prefix="$tmpdir/plink"
 
         bcftools query -l {input.vcf} \
             | sed -E 's/^(.*)_\1$/\1/' > {output.samples}
