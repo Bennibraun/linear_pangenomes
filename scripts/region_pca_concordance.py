@@ -38,15 +38,19 @@ def pca_coords(cov, k):
 
 
 def mantel(A, B, n=9999, seed=0):
+    """Mantel test: correlation of the two pairwise-distance matrices, with a
+    permutation p-value. Returns (observed r, p)."""
     a, b = pdist(A), pdist(B)
     r_obs = pearsonr(a, b)[0]
     Bsq = squareform(b)
     rng = np.random.default_rng(seed)
     ns = Bsq.shape[0]
-    cnt = sum(
-        abs(pearsonr(a, squareform(Bsq[np.ix_(idx := rng.permutation(ns), idx)]))[0]) >= abs(r_obs)
-        for _ in range(n)
-    )
+    cnt = 0
+    for _ in range(n):
+        perm = rng.permutation(ns)
+        b_perm = squareform(Bsq[np.ix_(perm, perm)])
+        if abs(pearsonr(a, b_perm)[0]) >= abs(r_obs):
+            cnt += 1
     return r_obs, (cnt + 1) / (n + 1)
 
 

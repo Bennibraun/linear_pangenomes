@@ -1,92 +1,37 @@
-# Accessory-sequence exploration (standalone, for the paper)
+# Accessory-sequence exploration
 
-One-off characterisation of what's *inside* the augref accessory (`SV_*`
-insertion) sequence — coding potential, repeat content, and which contigs are
-differentially present across populations (esp. cave-shared or surface-biased).
-**Not part of the Snakemake pipeline** — run these by hand on the cluster.
+What's *inside* the augref accessory (`SV_*` insertion) sequence — genes (not
+repeats) that are present/absent in a population-structured way, especially
+shared across independent cave populations (Molino/Pachón/Tinaja). Standalone,
+not part of the Snakemake pipeline.
 
-## Question
-
-Is there anything biologically interesting in the accessory sequence itself —
-genes (not repeats) that are present/absent in a population-structured way, and
-especially **shared across independent cave populations** (Molino / Pachón /
-Tinaja)? That's the accessory-specific discovery a plain linear reference can't
-make, and it's the biology payoff for the paper. Roback et al. is context, not a
-coordinate join: a hit landing on one of their cave genes/pathways corroborates,
-but we're not restricted to their list.
-
-## Pipeline (2 steps)
+## Run
 
 ```bash
-conda env create -f env.yaml
-conda activate accessory-explore
+mamba env create -f env.yaml
+mamba activate accessory-explore
 
-# Step 1: repeat-mask (dustmasker) + protein search (DIAMOND blastx)
-#   -> edit the CONFIG block first (esp. the protein DB), then:
-sbatch 01_mask_and_search.slurm
-
-# Step 2: overlay population presence/absence + rank interesting contigs
+bash 00_get_proteome.sh          # zebrafish proteome + DIAMOND db (needs internet)
+sbatch 01_mask_and_search.slurm  # dustmasker repeat filter -> DIAMOND blastx
 sbatch 02_population_overlay.slurm
 ```
 
-## What each step does
+Edit paths at the top of each script if yours differ (accessory FASTA, merged
+VCF, `reads_manifest.tsv`, and `DIAMOND_DB` in step 1).
 
-**01_mask_and_search.slurm**
-- `dustmasker` the accessory FASTA (`extracted_flanked_sv_seqs.dedup.fasta`) →
-  per-contig repeat/low-complexity fraction (`repeat_fraction.tsv`). This is a
-  *filter*, not repeat modelling — fast, and we report "% of accessory sequence
-  that's repetitive" as a result.
-- Split into `repetitive_contigs.txt` (≥50% masked) and `candidate_contigs.txt`.
-- `DIAMOND blastx` the candidate contigs vs a protein DB → `candidate_diamond.tsv`.
+## Outputs (in `results/accessory_explore/`)
 
-**02_population_overlay.py / .slurm**
-- Per-contig presence/absence across the 72 samples, from the merged augref VCF
-  (a sample "has" a contig if non-missing at ≥1 of its variant sites — a robust
-  binary signal that survives the accessory low-coverage confound).
-- Classifies each contig: `surface_biased`, `cave_biased`, `cave_shared`
-  (present in ≥2 independent cave populations — the Roback-style reuse signal).
-- Joins the DIAMOND best hit, flags TEs (transposase/gag-pol/etc.), and ranks so
-  **genic (non-TE) + structured** contigs sort to the top.
-- Outputs: `accessory_population_overlay.tsv` (all contigs, ranked) and
-  `accessory_candidates_shortlist.tsv` (the genic + cave-shared/surface-biased
-  shortlist to eyeball for the paper).
+- `repeat_fraction.tsv` — per-contig dustmasker masked fraction.
+- `candidate_diamond.tsv` — protein hits for non-repetitive contigs.
+- `overlay_all.tsv` — every contig: presence per population, cave_shared /
+  surface_biased flags, best hit, ranked.
+- `shortlist.tsv` — genic (non-TE) + structured contigs. The list to eyeball.
 
-## Step 0: get the protein DB
+## Notes
 
-Run **`00_get_proteome.sh`** on a login/transfer node (needs internet):
-
-```bash
-bash 00_get_proteome.sh                    # zebrafish full proteome + .dmnd
-# REVIEWED=true bash 00_get_proteome.sh    # smaller, curated Swiss-Prot only
-```
-
-It downloads the **zebrafish (*Danio rerio*) UniProt reference proteome**
-(UP000000437) via the paginated `search` endpoint (the `stream` endpoint drops
-large downloads mid-transfer — don't use it), then builds the DIAMOND `.dmnd` if
-`diamond` is on PATH. It prints the exact `DIAMOND_DB=...` line to paste into
-step 1's CONFIG.
-
-Why zebrafish: best-annotated teleost, gene names transfer cleanly, close enough
-to *Astyanax* to hit real genes. A broader set (UniRef90) catches more diverged
-genes but is huge and noisier — only worth it if the zebrafish pass leaves many
-interesting contigs with no hit. Avoid the *A. mexicanus* proteome itself; it'd
-mostly re-find conspec genes rather than reveal what's novel in the accessory.
-
-## Interpreting hits (caveats to keep in mind)
-
-- Contigs are **flanked** (200 bp conspec on each side of the novel insertion).
-  A DIAMOND hit confined to the flanks just re-finds a conspec gene — the novel
-  content is the middle (`ins<len>` in the contig name gives the novel length).
-  Prefer hits whose `qstart..qend` fall inside `[200, length-200]`.
-- Expect a large repetitive fraction — that's normal for accessory insertion
-  sequence, and reporting it is itself a result.
-- TEs that slip past dustmasker will hit transposase/gag-pol in the protein DB
-  and get `looks_like_TE=True` — filtered from the shortlist.
-- Presence/absence is robust; don't over-read exact per-population fractions at
-  low accessory depth (see the paper's QC section).
-
-## Inputs assumed (cluster paths, edit in the CONFIG blocks)
-
-- accessory FASTA: `results/sv_calls/augref/extracted_flanked_sv_seqs.dedup.fasta`
-- merged VCF: `results/variants/bcftools/augref/combined/merged.vcf.gz`
-- manifest: `reads_manifest.tsv` (columns `sample_id`, `grouping`)
+- Contigs are flanked (200 bp conspec each side). A hit only in the flanks
+  re-finds a conspec gene; the novel part is the middle (`ins<len>` in the name).
+- Expect lots of repeats — that's normal for accessory sequence, and the masked
+  fraction is itself a reportable number.
+- Presence/absence is robust to low accessory depth; don't over-read exact
+  per-population fractions.
