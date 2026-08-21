@@ -726,7 +726,7 @@ rule split_ld_prune_contigs:
         accessory_ld_min_len=PCANGSD_ACCESSORY_LD_MIN_LEN,
     resources:
         slurm_partition="short",
-        runtime=240,
+        runtime=960,
         mem_mb=8000,
         cpus=1,
     shell:
