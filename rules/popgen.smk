@@ -934,18 +934,17 @@ rule pcangsd:
         trap "rm -rf $tmpdir" EXIT
 
         # pcangsd >=1.x dropped --vcf / --n_eig and now consumes PLINK BED via
-        # -p PREFIX. Convert with plink2 first (plink1.9's chromosome table
-        # caps out around 59k distinct nonstandard contig names, which
-        # augref's per-SV-insertion contigs exceed).
-        # PLINK BED can't hold multiallelic sites, so split them to biallelic
-        # records first.
-        bcftools norm -m- -Oz -o "$tmpdir/split.vcf.gz" {input.vcf}
-
-        # --const-fid 0: VCF has no family info; assign FID=0 to every sample.
-        # --allow-extra-chr: tolerate non-numeric contig names (NC_*, NW_*).
-        plink2 --vcf "$tmpdir/split.vcf.gz" --make-bed --const-fid 0 --allow-extra-chr \
-              --memory {resources.mem_mb} \
-              --out "$tmpdir/plink"
+        # -p PREFIX. Convert with plink2 first. augref's LD-pruned VCF carries
+        # one representative variant per accessory SV_* contig, and there can be
+        # far more than plink2's ~65k distinct-nonstandard-contig cap, so the
+        # helper rewrites CHROM/POS into a bounded set of placeholder
+        # chromosomes before --make-bed (see scripts/vcf_to_plink_bucketed.py).
+        # It returns the plink prefix and a real-coords table (true contig
+        # names, in .bim row order) on two lines.
+        conv_out=$(python {workflow.basedir}/scripts/vcf_to_plink_bucketed.py \
+            --vcf {input.vcf} --tmpdir "$tmpdir" --memory-mb {resources.mem_mb})
+        plink_prefix=$(echo "$conv_out" | sed -n '1p')
+        real_coords=$(echo "$conv_out" | sed -n '2p')
 
         # Sample names for the PCA plot. Take them from the VCF (bcftools gives
         # them in the same order plink uses). Older LD-pruned VCFs carry plink's
@@ -955,11 +954,9 @@ rule pcangsd:
         # no-op there.)
         bcftools query -l {input.vcf} \
             | sed -E 's/^(.*)_\1$/\1/' > {output.samples}
-        # Save all BIM coords; filter to pcangsd-kept sites after --sites-save.
-        awk -v OFS='\t' '{{print $1, $4, $2}}' "$tmpdir/plink.bim" > "$tmpdir/all_coords.tsv"
 
         pcangsd \
-            -p "$tmpdir/plink" \
+            -p "$plink_prefix" \
             -t {threads} \
             -e {params.n_pcs} \
             --selection \
@@ -967,8 +964,10 @@ rule pcangsd:
             -o {params.prefix}
 
         # pcangsd --sites-save writes a boolean mask (0/1 per BIM site).
-        # Subset coords to only the sites pcangsd kept.
-        paste "$tmpdir/all_coords.tsv" {params.prefix}.sites \
+        # Subset the real-coords table (true SV_* names, in .bim row order --
+        # the chunk placeholders fed to plink2 never appear here) to only the
+        # sites pcangsd kept. real_coords is already CHROM\tPOS\tID.
+        paste "$real_coords" {params.prefix}.sites \
             | awk -F'\t' '$4 == 1 {{OFS="\t"; print $1, $2, $3}}' \
             > {output.snp_coords}
         """
@@ -1051,19 +1050,21 @@ rule pcangsd_by_region:
         tmpdir=$(mktemp -d -p $(dirname {params.prefix}))
         trap "rm -rf $tmpdir" EXIT
 
-        # PLINK BED can't hold multiallelic sites, so split them to biallelic
-        # records first.
-        bcftools norm -m- -Oz -o "$tmpdir/split.vcf.gz" {input.vcf}
-
-        plink2 --vcf "$tmpdir/split.vcf.gz" --make-bed --const-fid 0 --allow-extra-chr \
-              --memory {resources.mem_mb} \
-              --out "$tmpdir/plink"
+        # Convert to PLINK BED, remapping CHROM/POS into bounded placeholder
+        # chunks so plink2 stays under its ~65k distinct-contig cap (the
+        # augref_accessory region is *all* SV_* contigs, so this is essential
+        # here). See
+        # scripts/vcf_to_plink_bucketed.py; it returns the plink prefix and a
+        # real-coords table (unused here -- no snp_coords output).
+        conv_out=$(python {workflow.basedir}/scripts/vcf_to_plink_bucketed.py \
+            --vcf {input.vcf} --tmpdir "$tmpdir" --memory-mb {resources.mem_mb})
+        plink_prefix=$(echo "$conv_out" | sed -n '1p')
 
         bcftools query -l {input.vcf} \
             | sed -E 's/^(.*)_\1$/\1/' > {output.samples}
 
         pcangsd \
-            -p "$tmpdir/plink" \
+            -p "$plink_prefix" \
             -t {threads} \
             -e {params.n_pcs} \
             -o {params.prefix}
