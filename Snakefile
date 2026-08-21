@@ -383,7 +383,13 @@ rule all:
         FST_OUTDIR / "afs/augref.afs_by_region.tsv",
         PLOT_OUTDIR / "afs/augref_afs_by_region.png",
         PLOT_OUTDIR / "qc/augref_region_qc.png",
-        PLOT_OUTDIR / "pca/augref_pca_by_region.png"
+        PLOT_OUTDIR / "pca/augref_pca_by_region.png",
+        # Accessory deep-dive (E1/E3/E5): accessory-restricted FST vs graph,
+        # core-vs-accessory PCA concordance, accessory missingness sweep. All
+        # leaves off already-built VCFs/covariances (see rules/accessory_analysis.smk).
+        FST_OUTDIR / "fst_by_region/fst_by_region_summary.tsv",
+        PCANGSD_OUTDIR / "augref_region_concordance.tsv",
+        FST_OUTDIR / "afs/augref_accessory_missingness_sweep.tsv"
 
 rule nanostat:
     input:
@@ -1635,3 +1641,4 @@ rule split_vcf_per_sample:
 
 include: "rules/popgen.smk"
 include: "rules/plotting.smk"
+include: "rules/accessory_analysis.smk"
