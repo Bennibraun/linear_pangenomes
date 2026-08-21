@@ -51,15 +51,26 @@ sbatch 02_population_overlay.slurm
   `accessory_candidates_shortlist.tsv` (the genic + cave-shared/surface-biased
   shortlist to eyeball for the paper).
 
-## You must provide: a protein DB
+## Step 0: get the protein DB
 
-Set `DIAMOND_DB` (a prebuilt `.dmnd`) or `PROTEIN_FASTA` (built automatically) in
-step 1's CONFIG. Recommended: a teleost proteome — **zebrafish (*Danio rerio*)
-UniProt reference proteome** is a good default (well annotated, close enough to
-find real fish genes and name them). A broader set (UniRef90) catches more but is
-slower and noisier. The *A. mexicanus* proteome itself would mostly re-find
-conspec genes; a related-species proteome is better for spotting genes in genuinely
-novel accessory sequence.
+Run **`00_get_proteome.sh`** on a login/transfer node (needs internet):
+
+```bash
+bash 00_get_proteome.sh                    # zebrafish full proteome + .dmnd
+# REVIEWED=true bash 00_get_proteome.sh    # smaller, curated Swiss-Prot only
+```
+
+It downloads the **zebrafish (*Danio rerio*) UniProt reference proteome**
+(UP000000437) via the paginated `search` endpoint (the `stream` endpoint drops
+large downloads mid-transfer — don't use it), then builds the DIAMOND `.dmnd` if
+`diamond` is on PATH. It prints the exact `DIAMOND_DB=...` line to paste into
+step 1's CONFIG.
+
+Why zebrafish: best-annotated teleost, gene names transfer cleanly, close enough
+to *Astyanax* to hit real genes. A broader set (UniRef90) catches more diverged
+genes but is huge and noisier — only worth it if the zebrafish pass leaves many
+interesting contigs with no hit. Avoid the *A. mexicanus* proteome itself; it'd
+mostly re-find conspec genes rather than reveal what's novel in the accessory.
 
 ## Interpreting hits (caveats to keep in mind)
 
