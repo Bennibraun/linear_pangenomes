@@ -146,6 +146,116 @@ rule fst_by_region_summary:
 
 
 # ---------------------------------------------------------------------------
+# E1 (part 2): the GRAPH arm -- mc_graph structural (SV) vs SNP FST
+# ---------------------------------------------------------------------------
+# augref's accessory = its SV_* contigs. The graph's equivalent isn't a BED
+# filter (mc_graph is surjected to conspec coords, no SV_* contigs); its
+# "accessory" content is its STRUCTURAL variation -- the SV-sized records that
+# are exactly what the graph adds over a linear SNP-only view. So we split
+# mc_graph's merged VCF by record size: variant="sv" (max allele-length change
+# >= min_sv_size) vs "snp" (the rest), and compute pairwise FST for each. If
+# accessory-augref FST tracks sv-mc_graph FST the way core tracks snp, that's
+# the accessory signal being recovered by the linear representation.
+GRAPH_VARIANT_CLASSES = ["sv", "snp"]
+
+
+rule fst_mc_graph_by_variant_pair:
+    """Pairwise FST on mc_graph's merged VCF, split into SV vs SNP records by
+    allele-length change. Leaf rule off the already-built mc_graph merged VCF."""
+    input:
+        vcf=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/mc_graph/combined/merged.vcf.gz.tbi",
+    output:
+        fst=FST_OUTDIR / "fst_mc_graph_variant/{vclass}/{pop1}_vs_{pop2}.weir.fst",
+    conda:
+        "../envs/fst_afs.yaml"
+    wildcard_constraints:
+        vclass="sv|snp",
+    params:
+        window_args=FST_WINDOW_ARGS,
+        min_sv=SV_MIN_SIZE,
+        pop1_samples=lambda w: " ".join(POP_SAMPLES[w.pop1]),
+        pop2_samples=lambda w: " ".join(POP_SAMPLES[w.pop2]),
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        outdir=$(dirname {output.fst})
+        mkdir -p "$outdir"
+        prefix="${{outdir}}/{wildcards.pop1}_vs_{wildcards.pop2}"
+        sub="${{outdir}}/{wildcards.pop1}_vs_{wildcards.pop2}.{wildcards.vclass}.vcf"
+        pop1_tmp=$(mktemp -p "$outdir"); pop2_tmp=$(mktemp -p "$outdir")
+        trap "rm -f $pop1_tmp $pop2_tmp $sub" EXIT
+        for s in {params.pop1_samples}; do echo "$s"; done > "$pop1_tmp"
+        for s in {params.pop2_samples}; do echo "$s"; done > "$pop2_tmp"
+
+        # Split by allele-length change vs REF. Normalise to biallelic first so
+        # strlen(ALT)/strlen(REF) is one unambiguous value per record; -i keeps
+        # SVs (indel length >= min_sv), -e keeps everything else (SNPs/small).
+        len_expr='abs(strlen(ALT)-strlen(REF))>={params.min_sv}'
+        if [ "{wildcards.vclass}" = "sv" ]; then
+            bcftools norm -m- {input.vcf} -Ou | bcftools view -i "$len_expr" -Ov -o "$sub"
+        else
+            bcftools norm -m- {input.vcf} -Ou | bcftools view -e "$len_expr" -Ov -o "$sub"
+        fi
+
+        vcftools --vcf "$sub" \
+            --weir-fst-pop "$pop1_tmp" --weir-fst-pop "$pop2_tmp" \
+            {params.window_args} --out "$prefix" > /dev/null 2>&1 || true
+        if [ ! -f "${{prefix}}.weir.fst" ]; then
+            printf 'CHROM\tPOS\tWEIR_AND_COCKERHAM_FST\n' > "${{prefix}}.weir.fst"
+        fi
+        """
+
+
+rule fst_mc_graph_by_variant_summary:
+    """Aggregate mc_graph SV/SNP pairwise FST into one table (same shape as
+    fst_by_region_summary, so the accessory-vs-graph figure can join them)."""
+    input:
+        fst=lambda w: [
+            FST_OUTDIR / f"fst_mc_graph_variant/{vc}/{p1}_vs_{p2}.weir.fst"
+            for vc in GRAPH_VARIANT_CLASSES
+            for (p1, p2) in POP_PAIR_TUPLES
+        ],
+    output:
+        summary=FST_OUTDIR / "fst_mc_graph_variant/fst_mc_graph_variant_summary.tsv",
+    resources:
+        slurm_partition="short",
+        runtime=20,
+        mem_mb=2000,
+        cpus=1,
+    run:
+        import re
+        from pathlib import Path
+
+        import numpy as np
+        import pandas as pd
+
+        na = ["-nan", "nan", "-NaN", "NaN", "-inf", "inf"]
+        rows = []
+        for path in input.fst:
+            p = Path(path)
+            vclass = p.parent.name
+            m = re.match(r"(.+)_vs_(.+)\.weir\.fst$", p.name)
+            pop1, pop2 = m.group(1), m.group(2)
+            df = pd.read_csv(p, sep="\t", na_values=na)
+            col = ("WEIGHTED_FST" if "WEIGHTED_FST" in df.columns
+                   else "WEIR_AND_COCKERHAM_FST")
+            v = (pd.to_numeric(df[col], errors="coerce").dropna().clip(lower=0)
+                 if col in df.columns else pd.Series([], dtype=float))
+            rows.append({"vclass": vclass, "pop1": pop1, "pop2": pop2,
+                         "mean_fst": float(v.mean()) if len(v) else np.nan,
+                         "n_sites": int(len(v))})
+        out = pd.DataFrame(rows).sort_values(["vclass", "pop1", "pop2"])
+        Path(output.summary).parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(output.summary, sep="\t", index=False, float_format="%.6f")
+
+
+# ---------------------------------------------------------------------------
 # E5: core-vs-accessory structure concordance (Procrustes + Mantel)
 # ---------------------------------------------------------------------------
 rule region_pca_concordance:
@@ -182,13 +292,15 @@ MISSINGNESS_CUTOFFS = [0.5, 0.3, 0.1]
 
 
 rule accessory_missingness_sweep:
-    """Recompute the accessory folded SFS at a series of max-missingness cutoffs,
-    from the already-built accessory region VCF (split_ldpruned_vcf_by_region).
-    Emits one long-format TSV: cutoff, bin_low, bin_high, count, n_sites_kept.
-    Leaf rule, cheap."""
+    """Recompute the accessory folded SFS at a series of max-missingness cutoffs.
+    Reads the RAW combined merged VCF (all SV_* sites, before LD-pruning and the
+    MAF>=0.05 filter) -- that's where the intermediate-frequency skew lives; the
+    pruned VCF has the rare bins already removed, so it can't test the artifact.
+    The script subsets to SV_* contigs itself. Emits: cutoff, bin_low, bin_high,
+    count, prop, n_sites_kept. Leaf rule, cheap."""
     input:
-        vcf=PCANGSD_OUTDIR / "augref_accessory/merged.ldpruned.vcf.gz",
-        tbi=PCANGSD_OUTDIR / "augref_accessory/merged.ldpruned.vcf.gz.tbi",
+        vcf=VC_OUTDIR / "bcftools/augref/combined/merged.vcf.gz",
+        tbi=VC_OUTDIR / "bcftools/augref/combined/merged.vcf.gz.tbi",
     output:
         sweep=FST_OUTDIR / "afs/augref_accessory_missingness_sweep.tsv",
     conda:
@@ -198,8 +310,8 @@ rule accessory_missingness_sweep:
         bins=AFS_BINS,
     resources:
         slurm_partition="short",
-        runtime=60,
-        mem_mb=4000,
+        runtime=120,
+        mem_mb=8000,
         cpus=1,
     script:
         "../scripts/accessory_missingness_sweep.py"

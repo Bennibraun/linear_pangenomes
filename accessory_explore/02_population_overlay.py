@@ -68,11 +68,14 @@ def main():
     pres = contig_presence(vcf, samples)
     print(f"{len(pres)} SV_* contigs x {len(samples)} samples")
 
+    pop_members = {p: [i for i, s in enumerate(samples) if pop[s] == p] for p in pop.unique()}
     rows = []
     for contig, row in pres.items():
         r = {"contig": contig}
-        present = {p: row[[i for i, s in enumerate(samples) if pop[s] == p]].mean() >= PRESENT_FRAC
-                   for p in pop.unique()}
+        frac = {p: row[members].mean() for p, members in pop_members.items()}
+        for p, f in frac.items():                 # keep raw per-population fractions
+            r[f"frac_{p}"] = round(float(f), 3)
+        present = {p: f >= PRESENT_FRAC for p, f in frac.items()}
         cave = [p for p in present if not is_surface(p) and present[p]]
         surf = [p for p in present if is_surface(p) and present[p]]
         r.update(n_cave=len(cave), n_surface=len(surf),

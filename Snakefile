@@ -389,7 +389,10 @@ rule all:
         # leaves off already-built VCFs/covariances (see rules/accessory_analysis.smk).
         FST_OUTDIR / "fst_by_region/fst_by_region_summary.tsv",
         PCANGSD_OUTDIR / "augref_region_concordance.tsv",
-        FST_OUTDIR / "afs/augref_accessory_missingness_sweep.tsv"
+        FST_OUTDIR / "afs/augref_accessory_missingness_sweep.tsv",
+        # E1 graph arm: mc_graph SV-vs-SNP FST (only when the graph is built).
+        *([FST_OUTDIR / "fst_mc_graph_variant/fst_mc_graph_variant_summary.tsv"]
+          if INCLUDE_GRAPH else [])
 
 rule nanostat:
     input:
