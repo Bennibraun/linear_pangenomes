@@ -69,7 +69,7 @@ def diamond_gene(best_hit):
 
 def main():
     overlay, gff = sys.argv[1], sys.argv[2]
-    outdir = Path(sys.argv[3] if len(sys.argv) > 3 else "results/accessory_explore")
+    outdir = Path(sys.argv[3] if len(sys.argv) > 3 else "output")
     genes = load_genes(gff)
     print(f"{len(genes)} genes loaded")
 

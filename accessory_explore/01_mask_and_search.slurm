@@ -6,17 +6,14 @@
 #SBATCH --mem=32G
 #SBATCH --output=acc_explore_%j.log
 # Step 1: repeat-mask (dustmasker) the accessory contigs, then DIAMOND blastx
-# the non-repetitive ones against the protein DB. Edit CONFIG, then: sbatch this.
+# the non-repetitive ones. Paths come from config.sh. sbatch this.
 set -euo pipefail
-
-# ===== CONFIG =====
 source "$(conda info --base)/etc/profile.d/conda.sh"; conda activate accessory-explore
-FASTA="results/sv_calls/augref/extracted_flanked_sv_seqs.dedup.fasta"
-DIAMOND_DB="danio_rerio.dmnd"        # from 00_get_proteome.sh
-OUTDIR="results/accessory_explore"
+source config.sh
+
+FASTA="$ACCESSORY_FASTA"
 REPEAT_FRAC=0.50                     # contig is "repetitive" if >= this fraction masked
 THREADS=${SLURM_CPUS_PER_TASK:-16}
-# ==================
 
 mkdir -p "$OUTDIR"
 seqkit stats -a "$FASTA" | tee "$OUTDIR/fasta_stats.txt"

@@ -57,7 +57,7 @@ def best_hits(path):
 
 def main():
     vcf, diamond, repeat_frac, manifest = sys.argv[1:5]
-    outdir = Path(sys.argv[5] if len(sys.argv) > 5 else "results/accessory_explore")
+    outdir = Path(sys.argv[5] if len(sys.argv) > 5 else "output")
     outdir.mkdir(parents=True, exist_ok=True)
 
     man = pd.read_csv(manifest, sep="\t")
