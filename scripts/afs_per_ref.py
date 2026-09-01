@@ -52,7 +52,7 @@ for line in freq_path.read_text().strip().splitlines()[1:]:
     if idx is None:
         continue
     counts[idx] += 1
-    region = "accessory" if chrom.startswith("SV_") else "core"
+    region = "accessory" if chrom.startswith(("SV_", "UNMAP_")) else "core"
     region_counts[region][idx] += 1
 
 if out_afs is not None:

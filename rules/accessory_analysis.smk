@@ -13,8 +13,9 @@
 # which conspec cannot inherit (conspec has no accessory sites at all). These
 # rules produce the accessory-restricted statistics for that comparison.
 #
-# Variables (FST_OUTDIR, PCANGSD_OUTDIR, VC_OUTDIR, POP_SAMPLES, POP_PAIR_TUPLES,
-# ALIGN_AUGREF, FST_WINDOW_ARGS, AFS_BINS) come from the main Snakefile.
+# Variables (FST_OUTDIR, PCANGSD_OUTDIR, VC_OUTDIR, ALIGN_OUTDIR, POP_SAMPLES,
+# POP_NAMES, POP_PAIR_TUPLES, SHORT_SAMPLES, ALIGN_AUGREF, FST_WINDOW_ARGS,
+# AFS_BINS, config) come from the main Snakefile.
 
 # Which contig regions to compute accessory-restricted stats over. "core" =
 # non-SV_* contigs, "accessory" = SV_* contigs. augref only (conspec/hetspec
@@ -62,9 +63,9 @@ rule fst_by_region_pair:
         # split_ldpruned_vcf_by_region for why a BED, not a name list).
         bed="${{outdir}}/{wildcards.pop1}_vs_{wildcards.pop2}.region.bed"
         if [ "{wildcards.region}" = "core" ]; then
-            awk -F'\t' '$1 !~ /^SV_/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed"
+            awk -F'\t' '$1 !~ /^(SV_|UNMAP_)/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed"
         else
-            awk -F'\t' '$1 ~ /^SV_/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed"
+            awk -F'\t' '$1 ~ /^(SV_|UNMAP_)/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed"
         fi
 
         region_vcf="${{outdir}}/{wildcards.pop1}_vs_{wildcards.pop2}.{wildcards.region}.vcf"
@@ -331,3 +332,68 @@ rule accessory_missingness_sweep:
 # per-sample BAMs (heavy inputs) and a target-depth calc that should be tuned to
 # your accessory mean. Wire it up only if E3 doesn't already settle the artifact
 # question. See RESPONSE_TO_NOTES.md (E2) for the intended shape.
+
+
+# ---------------------------------------------------------------------------
+# Depth-aware PAV (presence/absence of accessory contigs) -- Bug 4b fix
+# ---------------------------------------------------------------------------
+# Replaces the old missingness-based presence (depth-confounded: cave accessory
+# depth is ~2x surface) with a normalised-coverage call per contig per sample
+# (contig depth / that sample's own core-genome baseline). See
+# scripts/accessory_pav_coverage.py. PAV done right is the most promising
+# augref-native analysis (Jeon's SV-PCA separated subspecies; a clean PAV matrix
+# could do the same where SNPs can't).
+
+PAV_CFG = config.get("accessory_pav", {})
+PAV_MIN_BREADTH = PAV_CFG.get("min_breadth", 0.5)
+PAV_MIN_NORM_COV = PAV_CFG.get("min_norm_cov", 0.3)
+
+
+rule accessory_pav_per_sample:
+    input:
+        bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
+        bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai",
+        fai=f"{ALIGN_AUGREF}.fai",
+    output:
+        long_tsv=FST_OUTDIR / "pav/per_sample/{sample}.pav.tsv",
+        matrix_tsv=temp(FST_OUTDIR / "pav/per_sample/{sample}.pav.col.tsv"),
+    conda:
+        "../envs/bcftools.yaml"
+    params:
+        sample=lambda wc: wc.sample,
+        min_breadth=PAV_MIN_BREADTH,
+        min_norm_cov=PAV_MIN_NORM_COV,
+    resources:
+        slurm_partition="short",
+        runtime=180,
+        mem_mb=8000,
+        cpus=1,
+    script:
+        "../scripts/accessory_pav_coverage.py"
+
+
+rule accessory_pav_matrix:
+    """Merge per-sample presence columns into one contig x sample 0/1 matrix, plus
+    per-population presence frequencies and pairwise Hudson PAV FST WITH a
+    label-permutation null (the negative control). Substrate for PAV PCA / morph
+    classification. See scripts/accessory_pav_matrix.py."""
+    input:
+        cols=expand(FST_OUTDIR / "pav/per_sample/{sample}.pav.col.tsv", sample=SHORT_SAMPLES),
+    output:
+        matrix=FST_OUTDIR / "pav/accessory_pav_matrix.tsv",
+        pop_freq=FST_OUTDIR / "pav/accessory_pav_pop_freq.tsv",
+        fst=FST_OUTDIR / "pav/accessory_pav_fst.tsv",
+    conda:
+        "../envs/plotting.yaml"
+    params:
+        pop_samples=POP_SAMPLES,
+        pop_pairs=POP_PAIR_TUPLES,
+        n_perm=config.get("accessory_pav_perm", {}).get("n_perm", 1000),
+        seed=config.get("accessory_pav_perm", {}).get("seed", 17),
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=1,
+    script:
+        "../scripts/accessory_pav_matrix.py"

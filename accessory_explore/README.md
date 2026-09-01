@@ -34,21 +34,6 @@ python 03_gff_intersect.py "$OUTDIR/overlay_all.tsv" GCF_023375975.1_AstMex3_sur
 
 (For 03, `$OUTDIR` is whatever you set in config.sh, e.g. `output`.)
 
-## Resuming an earlier run (outputs written to the wrong place)
-
-An earlier version of these scripts wrote outputs into the pipeline's
-`results/accessory_explore/`. To move them into this analysis's `OUTDIR` and
-resume WITHOUT recomputing 01/02/03:
-
-```bash
-bash migrate_outputs.sh          # moves them into $OUTDIR
-# then, once confirmed:  rm -rf "$PIPELINE_RESULTS/accessory_explore"
-```
-
-After migrating, everything (`candidate_diamond.tsv`, `repeat_fraction.tsv`,
-`overlay_all.tsv`, `overlay_with_locus.tsv`, …) is in `OUTDIR`; nothing needs
-rerunning.
-
 ## Outputs (in `$OUTDIR`)
 
 - `repeat_fraction.tsv` — per-contig dustmasker masked fraction.

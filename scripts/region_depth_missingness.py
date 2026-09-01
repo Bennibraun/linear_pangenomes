@@ -30,8 +30,8 @@ sample     = snakemake.params.sample
 out_path.parent.mkdir(parents=True, exist_ok=True)
 
 fai_rows = [line.split("\t") for line in Path(fai).read_text().splitlines() if line.strip()]
-core_rows = [r for r in fai_rows if not r[0].startswith("SV_")]
-acc_rows  = [r for r in fai_rows if r[0].startswith("SV_")]
+core_rows = [r for r in fai_rows if not r[0].startswith(("SV_", "UNMAP_"))]
+acc_rows  = [r for r in fai_rows if r[0].startswith(("SV_", "UNMAP_"))]
 
 
 def make_bed(fai_row_list):

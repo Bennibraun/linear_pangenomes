@@ -28,7 +28,7 @@ for line in Path(lengths_file).read_text().splitlines():
 
 # Canonical chromosomes for this ref = all contigs except augref-style SV
 # alt contigs. Per-ref because each reference has its own contig set.
-canonical = [c for c in lengths.keys() if not str(c).startswith("SV_")]
+canonical = [c for c in lengths.keys() if not str(c).startswith(("SV_", "UNMAP_"))]
 
 regions_arg = ""
 if canonical:

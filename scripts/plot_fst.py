@@ -32,7 +32,7 @@ df = df.dropna(subset=[fst_col, pos_col])
 # the positional manhattan x-axis. Instead of discarding them, split them out and
 # show their FST in a side panel — the accessory sequence is the reason augref
 # exists and its differentiation should be visible.
-is_acc = df["CHROM"].astype(str).str.startswith("SV_")
+is_acc = df["CHROM"].astype(str).str.startswith(("SV_", "UNMAP_"))
 acc_fst = pd.to_numeric(df.loc[is_acc, fst_col], errors="coerce").clip(lower=0).dropna()
 df = df[~is_acc]
 

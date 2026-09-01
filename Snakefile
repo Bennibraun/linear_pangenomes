@@ -107,6 +107,13 @@ SV_MIN_SUPPORT = SV_CFG.get("min_read_support", 3)
 SV_BREAKPOINT_SLOP = SV_CFG.get("breakpoint_slop", 1000)
 SV_JASMINE_SLOP = SV_CFG.get("jasmine_slop", 500)
 SV_FLANK = SV_CFG.get("flank", 200)
+SV_UNMAPPED_MIN_LEN = SV_CFG.get("unmapped_min_len", 10000)
+SV_UNMAPPED_MIN_MAPQ = SV_CFG.get("unmapped_min_mapq", 5)
+
+# Benchmarking: Snakemake `benchmark:` TSVs (wall-clock + peak RSS per rule) are
+# tallied into a linear-arm vs graph-arm cost comparison (the "without graph
+# overhead" claim). Split into linear_arm/ graph_arm/ shared/ subdirs.
+BENCH_OUTDIR = Path("results/benchmarks")
 
 CACTUS_CFG = config["cactus"]
 CACTUS_IMAGE = CACTUS_CFG["image"]
@@ -390,9 +397,24 @@ rule all:
         FST_OUTDIR / "fst_by_region/fst_by_region_summary.tsv",
         PCANGSD_OUTDIR / "augref_region_concordance.tsv",
         FST_OUTDIR / "afs/augref_accessory_missingness_sweep.tsv",
+        # ANGSD genotype-likelihood accessory arm: GL-based SFS / pi / Tajima's D
+        # and pairwise FST over the accessory contigs, replacing the artifactual
+        # low-depth hard-call estimates (see rules/angsd_accessory.smk).
+        FST_OUTDIR / "angsd_accessory/accessory_thetas_summary.tsv",
+        FST_OUTDIR / "angsd_accessory/accessory_fst_summary.tsv",
+        # E2 control: core Tajima's D at full vs accessory-like depth -- proves
+        # the accessory D shift is depth, not biology (see angsd_accessory.smk).
+        FST_OUTDIR / "angsd_accessory/core_downsample_tajima_control.tsv",
+        # Depth-aware PAV: normalised-coverage presence/absence matrix, per-pop
+        # presence frequencies, and Hudson PAV FST (see rules/accessory_analysis.smk).
+        FST_OUTDIR / "pav/accessory_pav_matrix.tsv",
+        FST_OUTDIR / "pav/accessory_pav_pop_freq.tsv",
+        FST_OUTDIR / "pav/accessory_pav_fst.tsv",
         # E1 graph arm: mc_graph SV-vs-SNP FST (only when the graph is built).
         *([FST_OUTDIR / "fst_mc_graph_variant/fst_mc_graph_variant_summary.tsv"]
-          if INCLUDE_GRAPH else [])
+          if INCLUDE_GRAPH else []),
+        # Cost benchmark (linear vs graph arm) -- needs both arms, so graph-gated.
+        *([BENCH_OUTDIR / "arm_cost_summary.tsv"] if INCLUDE_GRAPH else [])
 
 rule nanostat:
     input:
@@ -559,13 +581,11 @@ include: "rules/sv_calling.smk"
 rule sv_extract_sequences:
     input:
         vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
-        reference=ALIGN_CONSPEC,
     output:
-        fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.fasta",
+        fasta=SV_OUTDIR / "augref/extracted_sv_seqs.fasta",
     conda:
         "envs/sv_calling.yaml"
     params:
-        flank=SV_FLANK,
         min_ins=SV_MIN_SIZE,
         samples=" ".join(LONG_SAMPLES),
     resources:
@@ -576,11 +596,38 @@ rule sv_extract_sequences:
     script:
         "scripts/sv_extract_sequences.py"
 
+# Per-assembly: sequence with no conspec alignment (Jeon-style accessory).
+# Built from the same asm5 PAF the SV caller uses, so no new alignment.
+rule extract_unmapped_contigs:
+    input:
+        paf=SV_OUTDIR / "assembly_alignments/{sample}.sorted.paf",
+        assembly=str(SV_ASSEMBLY_DIR) + "/{sample}/assembly.fasta",
+    output:
+        fasta=SV_OUTDIR / "augref/unmapped/{sample}.unmapped.fasta",
+    conda:
+        "envs/sv_calling.yaml"
+    params:
+        sample=lambda wc: wc.sample,
+        min_len=SV_UNMAPPED_MIN_LEN,
+        min_mapq=SV_UNMAPPED_MIN_MAPQ,
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=8000,
+        cpus=1,
+    script:
+        "scripts/extract_unmapped_contigs.py"
+
+# Accessory = flankless SV inserts + unmapped assembly segments, pooled then
+# deduplicated together (cd-hit-est collapses near-identical sequence carried
+# by multiple assemblies / found by both the SV caller and the unmapped walk).
 rule sv_dedup_sequences:
     input:
-        fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.fasta",
+        sv_seqs=SV_OUTDIR / "augref/extracted_sv_seqs.fasta",
+        unmapped=expand(SV_OUTDIR / "augref/unmapped/{sample}.unmapped.fasta", sample=LONG_SAMPLES),
     output:
-        fasta=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.dedup.fasta",
+        pooled=temp(SV_OUTDIR / "augref/accessory_pooled.fasta"),
+        fasta=SV_OUTDIR / "augref/accessory_seqs.dedup.fasta",
     conda:
         "envs/sv_calling.yaml"
     resources:
@@ -590,19 +637,20 @@ rule sv_dedup_sequences:
     shell:
         r"""
         set -euo pipefail
-        cd-hit-est -i {input.fasta} -o {output.fasta} -c 0.95 -n 10
+        cat {input.sv_seqs} {input.unmapped} > {output.pooled}
+        cd-hit-est -i {output.pooled} -o {output.fasta} -c 0.95 -n 10
         """
 
 rule sv_build_augmented_reference:
     input:
         reference=ALIGN_CONSPEC,
-        sv_seqs=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.dedup.fasta",
+        acc_seqs=SV_OUTDIR / "augref/accessory_seqs.dedup.fasta",
     output:
         augref=SV_OUTDIR / "augref/augmented_reference.fasta",
     shell:
         r"""
         set -euo pipefail
-        cat {input.reference} {input.sv_seqs} > {output.augref}
+        cat {input.reference} {input.acc_seqs} > {output.augref}
         """
 
 CACTUS_STAGED_REF = Path("results") / "cactus_work" / "reference.fasta"
@@ -673,6 +721,8 @@ rule make_cactus_graph:
         gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
         gfa=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gfa.gz",
         vcf=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.vcf.gz"
+    benchmark:
+        BENCH_OUTDIR / "graph_arm/make_cactus_graph.tsv"
     container:
         CACTUS_IMAGE
     threads:
@@ -743,6 +793,8 @@ rule make_haplo_index:
         hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl",
         min=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.withzip.min",
         zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
+    benchmark:
+        BENCH_OUTDIR / "graph_arm/make_haplo_index.tsv"
     container:
         VG_IMAGE
     threads:
@@ -777,6 +829,13 @@ rule bwa_index:
         ann="{fasta}.ann",
         pac="{fasta}.pac",
         sa="{fasta}.sa"
+    benchmark:
+        # {fasta} is a full path (contains "/"), so this nests benchmark TSVs
+        # under results/benchmarks/index/<fasta-path>.tsv. The cost summary picks
+        # out the augref one by matching "augmented_reference" in the path -- that
+        # is the linear arm's one-time index cost (conspec/hetspec index the same
+        # way but aren't part of the augref-vs-graph comparison).
+        BENCH_OUTDIR / "index/{fasta}.tsv"
     conda:
         "envs/align_wgs.yaml"
     shell:
@@ -814,42 +873,11 @@ rule downsample_short_reads:
             {input.r1} {input.r2}
         """
 
-rule make_augref_alt:
-    """Build the BWA .alt sidecar that tells bwa-mem the SV_* contigs are
-    alternative representations of conspec breakpoints. Generated by
-    aligning the deduplicated SV insertion sequences back to conspec — the
-    raw bwa-mem SAM output IS the .alt file format. With this present next
-    to the augref index, bwa-mem stops collapsing the shared 200 bp flanks
-    to MAPQ 0 and assigns proper MAPQ across SV breakpoints, which propagates
-    through bcftools and the popgen stack with no other changes."""
-    input:
-        conspec=ALIGN_CONSPEC,
-        conspec_bwt=f"{ALIGN_CONSPEC}.bwt",
-        conspec_amb=f"{ALIGN_CONSPEC}.amb",
-        conspec_ann=f"{ALIGN_CONSPEC}.ann",
-        conspec_pac=f"{ALIGN_CONSPEC}.pac",
-        conspec_sa=f"{ALIGN_CONSPEC}.sa",
-        sv_seqs=SV_OUTDIR / "augref/extracted_flanked_sv_seqs.dedup.fasta",
-        # Augref must exist (and be indexed) before alignments consume the
-        # .alt file — it ends up next to the augref index by naming convention.
-        augref=ALIGN_AUGREF,
-        augref_bwt=f"{ALIGN_AUGREF}.bwt"
-    output:
-        alt=f"{ALIGN_AUGREF}.alt"
-    conda:
-        "envs/align_wgs.yaml"
-    threads: 8
-    resources:
-        slurm_partition="short",
-        runtime=180,
-        mem_mb=16000,
-        cpus=8
-    shell:
-        r"""
-        set -euo pipefail
-        bwa mem -t {threads} {input.conspec} {input.sv_seqs} > {output.alt}
-        """
-
+# NOTE: the former `make_augref_alt` rule (a BWA .alt sidecar) was removed.
+# Accessory contigs are now flankless novel sequence, so short reads no longer
+# multi-map between a contig and its conspec origin, and there is nothing for an
+# ALT sidecar to reconcile. ALT-aware bwa-mem without bwa-postalt was also
+# demoting/misscoring those alignments; plain bwa-mem is correct here.
 
 rule align_bwa_augref:
     input:
@@ -857,10 +885,11 @@ rule align_bwa_augref:
         fq2=ancient(ALIGN_OUTDIR / "{sample}/{sample}.R2.ds.fastq.gz"),
         ref=ALIGN_AUGREF,
         bwt=f"{ALIGN_AUGREF}.bwt",
-        alt=ancient(f"{ALIGN_AUGREF}.alt")
     output:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.augref.bam.bai"
+    benchmark:
+        BENCH_OUTDIR / "linear_arm/align_bwa_augref.{sample}.tsv"
     conda:
         "envs/align_wgs.yaml"
     threads:
@@ -947,6 +976,8 @@ rule giraffe_align:
         zipcodes=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.shortread.zipcodes"
     output:
         gam=ALIGN_OUTDIR / "{sample}/{sample}.cactus.gam"
+    benchmark:
+        BENCH_OUTDIR / "graph_arm/giraffe_align.{sample}.tsv"
     container:
         VG_IMAGE
     threads:
@@ -993,6 +1024,8 @@ rule vg_surject:
     output:
         bam=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam",
         bai=ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam.bai",
+    benchmark:
+        BENCH_OUTDIR / "graph_arm/vg_surject.{sample}.tsv"
     container:
         VG_IMAGE
     threads: ALIGN_THREADS
@@ -1645,3 +1678,4 @@ rule split_vcf_per_sample:
 include: "rules/popgen.smk"
 include: "rules/plotting.smk"
 include: "rules/accessory_analysis.smk"
+include: "rules/angsd_accessory.smk"

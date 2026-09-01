@@ -1,0 +1,1 @@
+	FST.Unweight[nObs:12345]:0.041234	Fst.Weight:0.058912

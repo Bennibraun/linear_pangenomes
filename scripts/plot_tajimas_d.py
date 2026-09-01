@@ -19,12 +19,12 @@ from scipy.stats import mannwhitneyu
 
 
 def region_class(chrom_series):
-    is_acc = chrom_series.astype(str).str.startswith("SV_")
+    is_acc = chrom_series.astype(str).str.startswith(("SV_", "UNMAP_"))
     return np.where(is_acc, "accessory", "core")
 
 
 def has_accessory(df, chrom_col="CHROM"):
-    return bool(df[chrom_col].astype(str).str.startswith("SV_").any())
+    return bool(df[chrom_col].astype(str).str.startswith(("SV_", "UNMAP_")).any())
 
 
 def core_accessory_stats(values_core, values_acc):

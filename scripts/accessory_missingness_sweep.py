@@ -44,7 +44,7 @@ def af_missing():
         except ValueError:
             continue
         maf = min(af, 1.0 - af)
-        if chrom.startswith("SV_"):
+        if chrom.startswith(("SV_", "UNMAP_")):
             acc_maf.append(maf)
             acc_miss.append(miss)
         else:

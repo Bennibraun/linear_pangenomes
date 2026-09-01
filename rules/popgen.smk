@@ -698,8 +698,8 @@ rule split_ld_prune_contigs:
     contigs long enough for real LD-pruning to be worth it), and
     accessory_small (SV_* contigs too short for that -- see ld_prune_vcf).
 
-    SV_* contigs are flanked SV sequence (sv_calling.flank bp on each side,
-    per config), so they are NOT guaranteed to carry only ~1 variant:
+    Accessory contigs (SV_* flankless novel inserts + UNMAP_* unmapped assembly
+    segments) are short and NOT guaranteed to carry only ~1 variant:
     multi-SNP/indel clusters within one contig are tightly linked (same short
     fragment, no realistic within-contig recombination), but real LD-pruning
     still matters once a contig is long enough for that linkage assumption to
@@ -708,7 +708,7 @@ rule split_ld_prune_contigs:
     pass as core; accessory_small contigs go through
     ld_prune_accessory_small's collapse-to-1-variant-per-contig instead.
 
-    For refs with no SV_* contigs (conspec, mc_graph) both accessory subsets
+    For refs with no accessory contigs (conspec, mc_graph) both accessory subsets
     are empty and downstream is equivalent to pruning core alone.
     """
     input:
@@ -757,12 +757,12 @@ rule split_ld_prune_contigs:
             | grep '^##contig=' \
             | sed -E 's/.*ID=([^,>]+).*length=([0-9]+).*/\1\t\2/' \
             > "$outdir/contigs.tsv"
-        awk -F'\t' '$1 !~ /^SV_/ {{print $1"\t0\t"$2}}' "$outdir/contigs.tsv" > "$core_bed"
+        awk -F'\t' '$1 !~ /^(SV_|UNMAP_)/ {{print $1"\t0\t"$2}}' "$outdir/contigs.tsv" > "$core_bed"
         awk -F'\t' -v minlen={params.accessory_ld_min_len} \
-            '$1 ~ /^SV_/ && $2 >= minlen {{print $1"\t0\t"$2}}' \
+            '$1 ~ /^(SV_|UNMAP_)/ && $2 >= minlen {{print $1"\t0\t"$2}}' \
             "$outdir/contigs.tsv" > "$accessory_big_bed"
         awk -F'\t' -v minlen={params.accessory_ld_min_len} \
-            '$1 ~ /^SV_/ && $2 < minlen {{print $1"\t0\t"$2}}' \
+            '$1 ~ /^(SV_|UNMAP_)/ && $2 < minlen {{print $1"\t0\t"$2}}' \
             "$outdir/contigs.tsv" > "$accessory_small_bed"
 
         # accessory_big sites are pruned together with core (same plink2
@@ -1004,9 +1004,9 @@ rule split_ldpruned_vcf_by_region:
         mkdir -p $(dirname {output.vcf})
         bed_file=$(dirname {output.vcf})/keep_contigs.bed
         if [ "{wildcards.region}" = "core" ]; then
-            awk -F'\t' '$1 !~ /^SV_/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed_file"
+            awk -F'\t' '$1 !~ /^(SV_|UNMAP_)/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed_file"
         else
-            awk -F'\t' '$1 ~ /^SV_/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed_file"
+            awk -F'\t' '$1 ~ /^(SV_|UNMAP_)/ {{print $1"\t0\t"$2}}' {input.fai} > "$bed_file"
         fi
         # A comma-joined -t/-r argument string blows the shell's ARG_MAX with
         # augref's thousands of SV_* contigs ("Argument list too long"), and
@@ -1095,3 +1095,30 @@ rule fst_outliers:
         cpus=1,
     script:
         "../scripts/fst_outliers.py"
+
+
+# ---------------------------------------------------------------------------
+# Cost benchmark: linear (augref) vs graph (mc_graph) arm
+# ---------------------------------------------------------------------------
+# Backs the "without graph overhead" claim. Depends on the arm outputs so the
+# Snakemake `benchmark:` side-files exist before the summary globs them; only
+# meaningful when the graph is built (needs both arms), so it's added to
+# `rule all` under INCLUDE_GRAPH.
+rule benchmark_summary:
+    input:
+        augref_bams=expand(ALIGN_OUTDIR / "{sample}/{sample}.augref.bam", sample=SHORT_SAMPLES),
+        graph_bams=expand(ALIGN_OUTDIR / "{sample}/{sample}.mc_graph.bam", sample=SHORT_SAMPLES),
+        augref_index=f"{ALIGN_AUGREF}.bwt",
+        gbz=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.gbz",
+        hapl=CACTUS_OUTDIR / f"{CACTUS_OUTNAME}.hapl",
+    output:
+        summary=BENCH_OUTDIR / "arm_cost_summary.tsv",
+    params:
+        bench_dir=BENCH_OUTDIR,
+    resources:
+        slurm_partition="short",
+        runtime=20,
+        mem_mb=2000,
+        cpus=1,
+    script:
+        "../scripts/benchmark_summary.py"

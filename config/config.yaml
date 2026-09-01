@@ -58,7 +58,37 @@ sv_calling:
   min_read_support: 3
   breakpoint_slop: 1000
   jasmine_slop: 500
-  flank: 200
+  flank: 200  # retained for other rules; accessory SV contigs are now emitted flankless
+  # Unmapped assembly content appended to the augref alongside SV inserts
+  # (Jeon-style linear pangenome accessory). A run of assembly sequence with no
+  # conspec alignment must be at least this long to be kept.
+  unmapped_min_len: 10000
+  unmapped_min_mapq: 5   # PAF alignments below this MAPQ are treated as non-coverage
+
+# Depth-aware presence/absence (PAV) of accessory contigs. A contig is present
+# when reads tile across it -- BREADTH (fraction of the contig covered >=1x) is
+# the primary signal, because true sequence tiles the whole contig while
+# mismapping piles a few reads on one spot (high depth, low breadth). The
+# normalised-coverage floor (contig depth / this sample's own core baseline) is
+# only a low anti-mismapping guard; it is normalised so the ~2x cave/surface
+# accessory-depth gap does not by itself flip presence. A contig is present when
+# breadth >= min_breadth AND norm_cov >= min_norm_cov.
+accessory_pav:
+  min_breadth: 0.6      # fraction of contig length covered >=1x (primary signal)
+  min_norm_cov: 0.15    # contig depth / sample core baseline (anti-mismapping floor)
+
+# E2 control: recompute core Tajima's D under ANGSD with reads thinned to
+# accessory-like depth. Core is ~7x, accessory ~1x, so `-downSample 0.15` takes
+# core to ~1x. If core-at-1x Tajima's D matches the accessory value, the
+# accessory D shift is proven to be a depth artifact, not biology.
+angsd_core_downsample:
+  frac: 0.15
+
+# PAV FST permutation null (negative control): shuffle population labels this
+# many times to get a null distribution for the observed presence-absence FST.
+accessory_pav_perm:
+  n_perm: 1000
+  seed: 17
 
 cactus:
   image: "docker://quay.io/comparative-genomics-toolkit/cactus:v3.2.1"

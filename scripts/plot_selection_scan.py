@@ -46,7 +46,7 @@ def _empty(msg):
 # test enrichment of selection outliers in accessory vs core.
 df = df.copy()
 df["region"] = np.where(
-    df["chrom"].astype(str).str.startswith("SV_"), "accessory", "core"
+    df["chrom"].astype(str).str.startswith(("SV_", "UNMAP_")), "accessory", "core"
 )
 df["chi2"] = pd.to_numeric(df["chi2"], errors="coerce")
 df["pval"] = pd.to_numeric(df["pval"], errors="coerce")

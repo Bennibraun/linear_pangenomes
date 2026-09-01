@@ -21,7 +21,7 @@ out_pdf = snakemake.output.pdf
 out_png = snakemake.output.png
 
 tajima = tajima.dropna(subset=["TajimaD"])
-tajima["region"] = tajima["CHROM"].astype(str).str.startswith("SV_").map(
+tajima["region"] = tajima["CHROM"].astype(str).str.startswith(("SV_", "UNMAP_")).map(
     {True: "accessory", False: "core"}
 )
 tajd_by_region = (
