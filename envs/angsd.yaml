@@ -1,8 +1,8 @@
-name: angsd
+name: linear-pangenomes-angsd
 channels:
-  - bioconda
   - conda-forge
+  - bioconda
+  - defaults
 dependencies:
-  - angsd=0.940
-  - samtools>=1.17
-  - htslib>=1.17
+  - angsd >=0.935
+  - samtools >=1.9
