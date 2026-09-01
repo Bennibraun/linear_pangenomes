@@ -6,10 +6,14 @@ Snakemake benchmark TSVs have a header row and one data row with columns:
 `s` is wall-clock seconds; `max_rss` is peak resident memory in MB.
 
 We report two comparisons:
-  - one-time build cost:  bwa index (augref)      vs  cactus + haplo-index
-  - per-sample cost:      bwa-mem align            vs  giraffe + surject
+  - one-time build cost:  (none benchmarked for linear)  vs  cactus + haplo-index
+  - per-sample cost:      bwa-mem align                   vs  giraffe + surject
 and a per-arm total (one-time + sum over samples), so the paper can state the
-whole-cohort cost ratio and the peak-memory ratio.
+whole-cohort cost ratio and the peak-memory ratio. The linear arm's one-time
+cost is dominated by per-sample alignment; bwa-index is a minor step and is not
+benchmarked (its {fasta} wildcard can be an absolute path). The graph arm carries
+a large one-time build (cactus + haplotype index) that the linear arm has no
+analogue for -- which is the whole point of the comparison.
 
 SV-calling cost (building the augref insert catalogue) is NOT included in the
 linear total: it is a one-time preprocessing step whose graph-side analogue is
@@ -63,8 +67,9 @@ def add(stage, arm, pattern):
         "peak_rss_gb": round(peak_rss / 1024.0, 2),
     })
 
-# One-time build.
-add("build_onetime", "linear", "index/**/*augmented_reference.fasta.tsv")
+# One-time build. Linear has no benchmarked one-time step (bwa-index unmeasured,
+# minor); the graph's cactus + haplo-index build is the one-time cost with no
+# linear analogue.
 add("build_onetime", "graph",  "graph_arm/make_cactus_graph.tsv")
 add("build_onetime", "graph",  "graph_arm/make_haplo_index.tsv")
 

@@ -22,6 +22,19 @@ AUGREF_FAI = f"{ALIGN_AUGREF}.fai"
 # ANGSD site/quality filters, shared across the arm.
 ANGSD_FILTERS = "-GL 1 -minMapQ 20 -minQ 20 -baq 1 -remove_bads 1 -uniqueOnly 1"
 
+# Constrain popn/pop1/pop2 to actual population names so the accessory
+# rules ({popn}/...) don't greedily match the E2 core paths (core_{cond}/{popn}/...)
+# or the fst/ pair paths. Regex-escape names (they're plain, but be safe).
+import re as _re
+_POP_RE = "|".join(sorted((_re.escape(p) for p in POP_NAMES), key=len, reverse=True))
+
+
+wildcard_constraints:
+    popn=_POP_RE,
+    pop1=_POP_RE,
+    pop2=_POP_RE,
+    cond="full|ds",
+
 
 def _augref_bams_for_pop(pop):
     return [str(ALIGN_OUTDIR / s / f"{s}.augref.bam") for s in POP_SAMPLES[pop]]
@@ -54,14 +67,14 @@ rule angsd_accessory_regions:
 # ---------------------------------------------------------------------------
 rule angsd_saf_per_pop:
     input:
-        bams=lambda wc: _augref_bams_for_pop(wc.pop),
-        bais=lambda wc: [b + ".bai" for b in _augref_bams_for_pop(wc.pop)],
+        bams=lambda wc: _augref_bams_for_pop(wc.popn),
+        bais=lambda wc: [b + ".bai" for b in _augref_bams_for_pop(wc.popn)],
         ref=ALIGN_AUGREF,
         fai=AUGREF_FAI,
         rf=ANGSD_OUTDIR / "accessory_regions.txt",
     output:
-        saf=ANGSD_OUTDIR / "{pop}/{pop}.saf.idx",
-        bamlist=temp(ANGSD_OUTDIR / "{pop}/{pop}.bamlist"),
+        saf=ANGSD_OUTDIR / "{popn}/{popn}.saf.idx",
+        bamlist=temp(ANGSD_OUTDIR / "{popn}/{popn}.bamlist"),
     conda:
         "../envs/angsd.yaml"
     threads: 8
@@ -71,7 +84,7 @@ rule angsd_saf_per_pop:
         mem_mb=24000,
         cpus=8,
     params:
-        prefix=lambda wc: str(ANGSD_OUTDIR / wc.pop / wc.pop),
+        prefix=lambda wc: str(ANGSD_OUTDIR / wc.popn / wc.popn),
         filters=ANGSD_FILTERS,
     shell:
         r"""
@@ -93,9 +106,9 @@ rule angsd_saf_per_pop:
 # ---------------------------------------------------------------------------
 rule angsd_sfs_per_pop:
     input:
-        saf=ANGSD_OUTDIR / "{pop}/{pop}.saf.idx",
+        saf=ANGSD_OUTDIR / "{popn}/{popn}.saf.idx",
     output:
-        sfs=ANGSD_OUTDIR / "{pop}/{pop}.sfs",
+        sfs=ANGSD_OUTDIR / "{popn}/{popn}.sfs",
     conda:
         "../envs/angsd.yaml"
     threads: 8
@@ -113,10 +126,10 @@ rule angsd_sfs_per_pop:
 
 rule angsd_thetas_per_pop:
     input:
-        saf=ANGSD_OUTDIR / "{pop}/{pop}.saf.idx",
-        sfs=ANGSD_OUTDIR / "{pop}/{pop}.sfs",
+        saf=ANGSD_OUTDIR / "{popn}/{popn}.saf.idx",
+        sfs=ANGSD_OUTDIR / "{popn}/{popn}.sfs",
     output:
-        pestPG=ANGSD_OUTDIR / "{pop}/{pop}.thetas.pestPG",
+        pestPG=ANGSD_OUTDIR / "{popn}/{popn}.thetas.pestPG",
     conda:
         "../envs/angsd.yaml"
     threads: 4
@@ -126,7 +139,7 @@ rule angsd_thetas_per_pop:
         mem_mb=16000,
         cpus=4,
     params:
-        prefix=lambda wc: str(ANGSD_OUTDIR / wc.pop / wc.pop),
+        prefix=lambda wc: str(ANGSD_OUTDIR / wc.popn / wc.popn),
     shell:
         r"""
         set -euo pipefail
@@ -142,10 +155,10 @@ rule angsd_thetas_per_pop:
 # ---------------------------------------------------------------------------
 rule angsd_fst_pair:
     input:
-        saf_a=ANGSD_OUTDIR / "{pop_a}/{pop_a}.saf.idx",
-        saf_b=ANGSD_OUTDIR / "{pop_b}/{pop_b}.saf.idx",
+        saf1=ANGSD_OUTDIR / "{pop1}/{pop1}.saf.idx",
+        saf2=ANGSD_OUTDIR / "{pop2}/{pop2}.saf.idx",
     output:
-        fst=ANGSD_OUTDIR / "fst/{pop_a}__{pop_b}.fst.global",
+        fst=ANGSD_OUTDIR / "fst/{pop1}__{pop2}.fst.global",
     conda:
         "../envs/angsd.yaml"
     threads: 8
@@ -155,14 +168,14 @@ rule angsd_fst_pair:
         mem_mb=24000,
         cpus=8,
     params:
-        prefix=lambda wc: str(ANGSD_OUTDIR / "fst" / f"{wc.pop_a}__{wc.pop_b}"),
+        prefix=lambda wc: str(ANGSD_OUTDIR / "fst" / f"{wc.pop1}__{wc.pop2}"),
     shell:
         r"""
         set -euo pipefail
         mkdir -p $(dirname {params.prefix})
-        realSFS {input.saf_a} {input.saf_b} -fold 1 -P {threads} \
+        realSFS {input.saf1} {input.saf2} -fold 1 -P {threads} \
             > {params.prefix}.2dsfs
-        realSFS fst index {input.saf_a} {input.saf_b} \
+        realSFS fst index {input.saf1} {input.saf2} \
             -sfs {params.prefix}.2dsfs -fold 1 \
             -fstout {params.prefix}
         # Global weighted + unweighted FST for the accessory.
@@ -175,7 +188,7 @@ rule angsd_fst_pair:
 # ---------------------------------------------------------------------------
 rule angsd_accessory_summary:
     input:
-        thetas=expand(ANGSD_OUTDIR / "{pop}/{pop}.thetas.pestPG", pop=POP_NAMES),
+        thetas=expand(ANGSD_OUTDIR / "{popn}/{popn}.thetas.pestPG", popn=POP_NAMES),
         fsts=expand(
             ANGSD_OUTDIR / "fst/{pair[0]}__{pair[1]}.fst.global",
             pair=POP_PAIR_TUPLES,
@@ -283,14 +296,14 @@ rule angsd_core_saf_per_pop:
     """Core SAF per pop, at full depth (cond='full') or thinned to accessory-like
     depth (cond='ds'). The {cond} wildcard selects the -downSample argument."""
     input:
-        bams=lambda wc: _augref_bams_for_pop(wc.pop),
-        bais=lambda wc: [b + ".bai" for b in _augref_bams_for_pop(wc.pop)],
+        bams=lambda wc: _augref_bams_for_pop(wc.popn),
+        bais=lambda wc: [b + ".bai" for b in _augref_bams_for_pop(wc.popn)],
         ref=ALIGN_AUGREF,
         fai=AUGREF_FAI,
         rf=ANGSD_OUTDIR / "core_regions.txt",
     output:
-        saf=ANGSD_OUTDIR / "core_{cond}/{pop}/{pop}.saf.idx",
-        bamlist=temp(ANGSD_OUTDIR / "core_{cond}/{pop}/{pop}.bamlist"),
+        saf=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.idx",
+        bamlist=temp(ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.bamlist"),
     conda:
         "../envs/angsd.yaml"
     wildcard_constraints:
@@ -302,7 +315,7 @@ rule angsd_core_saf_per_pop:
         mem_mb=24000,
         cpus=8,
     params:
-        prefix=lambda wc: str(ANGSD_OUTDIR / f"core_{wc.cond}" / wc.pop / wc.pop),
+        prefix=lambda wc: str(ANGSD_OUTDIR / f"core_{wc.cond}" / wc.popn / wc.popn),
         filters=ANGSD_FILTERS,
         downsample=lambda wc: f"-downSample {ANGSD_DS_FRAC}" if wc.cond == "ds" else "",
     shell:
@@ -322,9 +335,9 @@ rule angsd_core_saf_per_pop:
 
 rule angsd_core_thetas_per_pop:
     input:
-        saf=ANGSD_OUTDIR / "core_{cond}/{pop}/{pop}.saf.idx",
+        saf=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.idx",
     output:
-        pestPG=ANGSD_OUTDIR / "core_{cond}/{pop}/{pop}.thetas.pestPG",
+        pestPG=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.thetas.pestPG",
     conda:
         "../envs/angsd.yaml"
     wildcard_constraints:
@@ -336,7 +349,7 @@ rule angsd_core_thetas_per_pop:
         mem_mb=16000,
         cpus=8,
     params:
-        prefix=lambda wc: str(ANGSD_OUTDIR / f"core_{wc.cond}" / wc.pop / wc.pop),
+        prefix=lambda wc: str(ANGSD_OUTDIR / f"core_{wc.cond}" / wc.popn / wc.popn),
     shell:
         r"""
         set -euo pipefail
@@ -351,9 +364,9 @@ rule angsd_core_downsample_summary:
     """One table: per-pop Tajima's D for accessory, core-full, core-downsampled.
     The decisive comparison for 'accessory D is depth, not biology'."""
     input:
-        accessory=expand(ANGSD_OUTDIR / "{pop}/{pop}.thetas.pestPG", pop=POP_NAMES),
-        core_full=expand(ANGSD_OUTDIR / "core_full/{pop}/{pop}.thetas.pestPG", pop=POP_NAMES),
-        core_ds=expand(ANGSD_OUTDIR / "core_ds/{pop}/{pop}.thetas.pestPG", pop=POP_NAMES),
+        accessory=expand(ANGSD_OUTDIR / "{popn}/{popn}.thetas.pestPG", popn=POP_NAMES),
+        core_full=expand(ANGSD_OUTDIR / "core_full/{popn}/{popn}.thetas.pestPG", popn=POP_NAMES),
+        core_ds=expand(ANGSD_OUTDIR / "core_ds/{popn}/{popn}.thetas.pestPG", popn=POP_NAMES),
     output:
         tsv=ANGSD_OUTDIR / "core_downsample_tajima_control.tsv",
     resources:

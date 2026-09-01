@@ -821,6 +821,11 @@ rule make_haplo_index:
         """
 
 rule bwa_index:
+    # No `benchmark:` here: {fasta} can be an absolute path (conspec/hetspec live
+    # outside the workdir), which would produce a "results/benchmarks/index//abs..."
+    # double-slash path. bwa-index is also a minor one-time cost next to per-sample
+    # alignment and the cactus build, so the arm cost comparison (benchmark_summary)
+    # is driven by align_bwa_augref vs giraffe+surject and the one-time graph build.
     input:
         fasta="{fasta}"
     output:
@@ -829,13 +834,6 @@ rule bwa_index:
         ann="{fasta}.ann",
         pac="{fasta}.pac",
         sa="{fasta}.sa"
-    benchmark:
-        # {fasta} is a full path (contains "/"), so this nests benchmark TSVs
-        # under results/benchmarks/index/<fasta-path>.tsv. The cost summary picks
-        # out the augref one by matching "augmented_reference" in the path -- that
-        # is the linear arm's one-time index cost (conspec/hetspec index the same
-        # way but aren't part of the augref-vs-graph comparison).
-        BENCH_OUTDIR / "index/{fasta}.tsv"
     conda:
         "envs/align_wgs.yaml"
     shell:
