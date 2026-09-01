@@ -386,7 +386,8 @@ rule accessory_pav_matrix:
     conda:
         "../envs/plotting.yaml"
     params:
-        pop_samples=POP_SAMPLES,
+        # short-only per-pop grouping: PAV is over short-read augref BAMs
+        pop_samples=POP_SHORT_SAMPLES,
         pop_pairs=POP_PAIR_TUPLES,
         n_perm=config.get("accessory_pav_perm", {}).get("n_perm", 1000),
         seed=config.get("accessory_pav_perm", {}).get("seed", 17),

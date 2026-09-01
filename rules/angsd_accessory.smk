@@ -37,7 +37,10 @@ wildcard_constraints:
 
 
 def _augref_bams_for_pop(pop):
-    return [str(ALIGN_OUTDIR / s / f"{s}.augref.bam") for s in POP_SAMPLES[pop]]
+    # POP_SHORT_SAMPLES (not POP_SAMPLES): only short-read samples have augref
+    # BAMs. Using POP_SAMPLES would pull in the long-read assembly samples and
+    # demand a short-read pipeline output for them (KeyError in downsample).
+    return [str(ALIGN_OUTDIR / s / f"{s}.augref.bam") for s in POP_SHORT_SAMPLES[pop]]
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +76,11 @@ rule angsd_saf_per_pop:
         fai=AUGREF_FAI,
         rf=ANGSD_OUTDIR / "accessory_regions.txt",
     output:
+        # angsd -doSaf writes a 3-file SAF set; declare all so Snakemake tracks
+        # them together (realSFS/saf2theta need all three side by side).
         saf=ANGSD_OUTDIR / "{popn}/{popn}.saf.idx",
+        saf_pos=ANGSD_OUTDIR / "{popn}/{popn}.saf.pos.gz",
+        saf_gz=ANGSD_OUTDIR / "{popn}/{popn}.saf.gz",
         bamlist=temp(ANGSD_OUTDIR / "{popn}/{popn}.bamlist"),
     conda:
         "../envs/angsd.yaml"
@@ -107,6 +114,8 @@ rule angsd_saf_per_pop:
 rule angsd_sfs_per_pop:
     input:
         saf=ANGSD_OUTDIR / "{popn}/{popn}.saf.idx",
+        saf_pos=ANGSD_OUTDIR / "{popn}/{popn}.saf.pos.gz",
+        saf_gz=ANGSD_OUTDIR / "{popn}/{popn}.saf.gz",
     output:
         sfs=ANGSD_OUTDIR / "{popn}/{popn}.sfs",
     conda:
@@ -127,6 +136,8 @@ rule angsd_sfs_per_pop:
 rule angsd_thetas_per_pop:
     input:
         saf=ANGSD_OUTDIR / "{popn}/{popn}.saf.idx",
+        saf_pos=ANGSD_OUTDIR / "{popn}/{popn}.saf.pos.gz",
+        saf_gz=ANGSD_OUTDIR / "{popn}/{popn}.saf.gz",
         sfs=ANGSD_OUTDIR / "{popn}/{popn}.sfs",
     output:
         pestPG=ANGSD_OUTDIR / "{popn}/{popn}.thetas.pestPG",
@@ -146,7 +157,10 @@ rule angsd_thetas_per_pop:
         realSFS saf2theta {input.saf} -sfs {input.sfs} -fold 1 \
             -P {threads} -outnames {params.prefix}
         # Genome-wide (single-window) theta summary: pi, Watterson, Tajima's D.
+        # thetaStat writes to <input>.pestPG (i.e. {prefix}.thetas.idx.pestPG);
+        # rename to the declared output so the rule is self-consistent.
         thetaStat do_stat {params.prefix}.thetas.idx
+        mv {params.prefix}.thetas.idx.pestPG {output.pestPG}
         """
 
 
@@ -157,6 +171,12 @@ rule angsd_fst_pair:
     input:
         saf1=ANGSD_OUTDIR / "{pop1}/{pop1}.saf.idx",
         saf2=ANGSD_OUTDIR / "{pop2}/{pop2}.saf.idx",
+        # sibling SAF files realSFS reads by convention (kept explicit so the DAG
+        # rebuilds them if missing, not just the .idx)
+        saf1_pos=ANGSD_OUTDIR / "{pop1}/{pop1}.saf.pos.gz",
+        saf1_gz=ANGSD_OUTDIR / "{pop1}/{pop1}.saf.gz",
+        saf2_pos=ANGSD_OUTDIR / "{pop2}/{pop2}.saf.pos.gz",
+        saf2_gz=ANGSD_OUTDIR / "{pop2}/{pop2}.saf.gz",
     output:
         fst=ANGSD_OUTDIR / "fst/{pop1}__{pop2}.fst.global",
     conda:
@@ -303,6 +323,8 @@ rule angsd_core_saf_per_pop:
         rf=ANGSD_OUTDIR / "core_regions.txt",
     output:
         saf=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.idx",
+        saf_pos=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.pos.gz",
+        saf_gz=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.gz",
         bamlist=temp(ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.bamlist"),
     conda:
         "../envs/angsd.yaml"
@@ -336,6 +358,8 @@ rule angsd_core_saf_per_pop:
 rule angsd_core_thetas_per_pop:
     input:
         saf=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.idx",
+        saf_pos=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.pos.gz",
+        saf_gz=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.saf.gz",
     output:
         pestPG=ANGSD_OUTDIR / "core_{cond}/{popn}/{popn}.thetas.pestPG",
     conda:
@@ -357,6 +381,7 @@ rule angsd_core_thetas_per_pop:
         realSFS saf2theta {input.saf} -sfs {params.prefix}.sfs -fold 1 \
             -P {threads} -outnames {params.prefix}
         thetaStat do_stat {params.prefix}.thetas.idx
+        mv {params.prefix}.thetas.idx.pestPG {output.pestPG}
         """
 
 

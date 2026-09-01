@@ -45,6 +45,15 @@ SHORT_READS_R2 = {row["sample_id"]: row["fastq_r2"] for _, row in manifest_df[ma
 SAMPLE_TO_POP = dict(zip(manifest_df["sample_id"], manifest_df["grouping"]))
 POP_NAMES = sorted(manifest_df["grouping"].unique().tolist())
 POP_SAMPLES = {pop: manifest_df[manifest_df["grouping"] == pop]["sample_id"].tolist() for pop in POP_NAMES}
+# Short-read samples per population. POP_SAMPLES mixes long+short (grouping has no
+# seq_type filter); the existing popgen rules get away with using it because they
+# pass the names to vcftools --keep, which silently ignores names absent from the
+# VCF. Any rule that demands a PER-SAMPLE FILE per population (e.g. the ANGSD arm's
+# augref BAMs, PAV) must use this short-only mapping instead, or it will request a
+# short-read pipeline output for a long-read assembly sample and fail.
+_SHORT_SET = set(SHORT_SAMPLES)
+POP_SHORT_SAMPLES = {pop: [s for s in samples if s in _SHORT_SET]
+                     for pop, samples in POP_SAMPLES.items()}
 
 # ============================================================================
 # Reference genome configurations
@@ -630,6 +639,7 @@ rule sv_dedup_sequences:
         fasta=SV_OUTDIR / "augref/accessory_seqs.dedup.fasta",
     conda:
         "envs/sv_calling.yaml"
+    threads: 4
     resources:
         runtime=960,
         mem_mb=16000,
@@ -638,7 +648,10 @@ rule sv_dedup_sequences:
         r"""
         set -euo pipefail
         cat {input.sv_seqs} {input.unmapped} > {output.pooled}
-        cd-hit-est -i {output.pooled} -o {output.fasta} -c 0.95 -n 10
+        # -M 0: no memory cap (the pooled accessory -- SV inserts + unmapped
+        # assembly segments -- is larger than the old SV-only input and can
+        # exceed cd-hit's 800 MB default). -T for the allotted cores.
+        cd-hit-est -i {output.pooled} -o {output.fasta} -c 0.95 -n 10 -M 0 -T {threads}
         """
 
 rule sv_build_augmented_reference:
