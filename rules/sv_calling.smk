@@ -436,8 +436,10 @@ rule sv_gt_template:
         catalog=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         reference=ALIGN_CONSPEC,
     output:
-        template=SV_OUTDIR / "genotyping/catalog_template.vcf.gz",
-        tbi=SV_OUTDIR / "genotyping/catalog_template.vcf.gz.tbi",
+        # PLAIN (uncompressed) VCF on purpose: Sniffles 2.8.0 --genotype-vcf
+        # cannot read a bgzipped template (it line-parses the file and errors
+        # with "'VariantRecord' object has no attribute 'strip'" on a .vcf.gz).
+        template=SV_OUTDIR / "genotyping/catalog_template.vcf",
     conda:
         "../envs/sv_calling.yaml"
     resources:
@@ -448,10 +450,9 @@ rule sv_gt_template:
     shell:
         r"""
         set -euo pipefail
-        # sites-only (drop sample columns), sort, bgzip, index
+        # sites-only (drop sample columns), sort, write uncompressed VCF
         bcftools view --drop-genotypes {input.catalog} \
-            | bcftools sort -Oz -o {output.template}
-        tabix -p vcf {output.template}
+            | bcftools sort -Ov -o {output.template}
         """
 
 
@@ -462,7 +463,7 @@ rule sv_genotype_sample:
     input:
         bam=SV_OUTDIR / "read_alignments/{sample}.sorted.bam",
         bai=SV_OUTDIR / "read_alignments/{sample}.sorted.bam.bai",
-        template=SV_OUTDIR / "genotyping/catalog_template.vcf.gz",
+        template=SV_OUTDIR / "genotyping/catalog_template.vcf",
         reference=ALIGN_CONSPEC,
     output:
         vcf=SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz",
@@ -475,19 +476,24 @@ rule sv_genotype_sample:
         runtime=120,
         mem_mb=8000,
         cpus=SV_THREADS,
+    params:
+        plain=lambda wc: str(SV_OUTDIR / f"genotyping/per_sample/{wc.sample}.regenotyped.vcf"),
     shell:
         r"""
         set -euo pipefail
+        # Sniffles writes to a plain .vcf; we bgzip+index ourselves so the
+        # compression is unambiguous regardless of how this Sniffles build
+        # interprets a .gz output extension.
         sniffles \
             --input {input.bam} \
             --reference {input.reference} \
             --genotype-vcf {input.template} \
-            --vcf {output.vcf} \
+            --vcf {params.plain} \
             --threads {threads} \
             --sample-id {wildcards.sample} \
             --allow-overwrite
-        # Sniffles writes bgzipped VCF when the output ends in .gz; ensure index
-        if [ ! -f {output.tbi} ]; then tabix -p vcf {output.vcf}; fi
+        bgzip -f {params.plain}
+        tabix -p vcf {output.vcf}
         """
 
 
