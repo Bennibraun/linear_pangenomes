@@ -9,6 +9,7 @@ dependencies:
   - minimap2
   - samtools >=1.9
   - bcftools >=1.9
+  - htslib  # tabix/bgzip for re-genotyping rules
   - sniffles
   - cutesv
   - survivor

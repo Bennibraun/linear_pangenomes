@@ -408,3 +408,113 @@ rule sv_sharing_summary:
         samples=LONG_SAMPLES,
     script:
         "../scripts/sv_sharing_summary.py"
+
+
+# ===========================================================================
+# Read-based re-genotyping of the pan-sample catalog
+# ===========================================================================
+# The SURVIVOR/Jasmine catalog records presence as SUPP_VEC, which is derived
+# from each sample's *assembly*-based callset. That confounds "absent" with
+# "this sample's assembly missed it" -- a real problem for private/shared SV
+# analysis, because a low-coverage assembly produces spurious absences.
+#
+# These rules force-call every catalog SV against each sample's aligned READS
+# with Sniffles2 (--genotype-vcf), then merge into one multi-sample VCF with a
+# real GT + supporting-read depth (DR/DV) per sample. Downstream P/A analysis
+# then reads genotypes, and low-confidence calls become honest missing (./.)
+# rather than false absences.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Prep: normalise the merged catalog into a clean force-call template.
+# SURVIVOR's merged VCF carries per-caller FORMAT fields and can trip Sniffles'
+# --genotype-vcf reader; sort + strip to a minimal sites-only VCF first.
+# ---------------------------------------------------------------------------
+rule sv_gt_template:
+    input:
+        catalog=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
+        reference=ALIGN_CONSPEC,
+    output:
+        template=SV_OUTDIR / "genotyping/catalog_template.vcf.gz",
+        tbi=SV_OUTDIR / "genotyping/catalog_template.vcf.gz.tbi",
+    conda:
+        "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        # sites-only (drop sample columns), sort, bgzip, index
+        bcftools view --drop-genotypes {input.catalog} \
+            | bcftools sort -Oz -o {output.template}
+        tabix -p vcf {output.template}
+        """
+
+
+# ---------------------------------------------------------------------------
+# Per-sample: force-genotype the catalog against this sample's read alignments
+# ---------------------------------------------------------------------------
+rule sv_genotype_sample:
+    input:
+        bam=SV_OUTDIR / "read_alignments/{sample}.sorted.bam",
+        bai=SV_OUTDIR / "read_alignments/{sample}.sorted.bam.bai",
+        template=SV_OUTDIR / "genotyping/catalog_template.vcf.gz",
+        reference=ALIGN_CONSPEC,
+    output:
+        vcf=SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz",
+        tbi=SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz.tbi",
+    conda:
+        "../envs/sv_calling.yaml"
+    threads: SV_THREADS
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=SV_THREADS,
+    shell:
+        r"""
+        set -euo pipefail
+        sniffles \
+            --input {input.bam} \
+            --reference {input.reference} \
+            --genotype-vcf {input.template} \
+            --vcf {output.vcf} \
+            --threads {threads} \
+            --sample-id {wildcards.sample} \
+            --allow-overwrite
+        # Sniffles writes bgzipped VCF when the output ends in .gz; ensure index
+        if [ ! -f {output.tbi} ]; then tabix -p vcf {output.vcf}; fi
+        """
+
+
+# ---------------------------------------------------------------------------
+# Pan-sample: merge per-sample re-genotyped VCFs into one multi-sample VCF
+# ---------------------------------------------------------------------------
+rule sv_genotype_merge:
+    input:
+        vcfs=expand(
+            SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz",
+            sample=LONG_SAMPLES,
+        ),
+    output:
+        vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.regenotyped.vcf.gz",
+        tbi=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.regenotyped.vcf.gz.tbi",
+    conda:
+        "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        # force-genotyped per-sample VCFs share identical sites, so a straight
+        # merge lines them up column-by-column into one multi-sample matrix
+        bcftools merge --force-samples -m none -Oz -o {output.vcf} {input.vcfs}
+        tabix -p vcf {output.vcf}
+        """

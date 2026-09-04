@@ -312,6 +312,8 @@ rule all:
         SV_OUTDIR / "pan_sample_catalog/sv_support_matrix.txt",
         SV_OUTDIR / "pan_sample_catalog/novel_sequence_summary.tsv",
         SV_OUTDIR / "pan_sample_catalog/sv_sharing_summary.tsv",
+        # Read-based re-genotyping of the catalog (genotype-aware P/A analysis)
+        SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.regenotyped.vcf.gz",
         SV_OUTDIR / "augref/augmented_reference.fasta",
         # Cactus graph (optional; INCLUDE_GRAPH)
         *([
