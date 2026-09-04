@@ -419,26 +419,28 @@ rule sv_sharing_summary:
 # analysis, because a low-coverage assembly produces spurious absences.
 #
 # These rules force-call every catalog SV against each sample's aligned READS
-# with Sniffles2 (--genotype-vcf), then merge into one multi-sample VCF with a
-# real GT + supporting-read depth (DR/DV) per sample. Downstream P/A analysis
-# then reads genotypes, and low-confidence calls become honest missing (./.)
-# rather than false absences.
+# with cuteFC (the force-calling/re-genotyping tool spun out of cuteSV), then
+# merge into one multi-sample VCF with a real GT + supporting-read depth (DR/DV)
+# per sample. Downstream P/A analysis then reads genotypes, and low-confidence
+# calls become honest missing (./.) rather than false absences.
+#
+# Why cuteFC and not Sniffles --genotype-vcf: Sniffles' force-caller silently
+# returns an EMPTY callset when handed a SURVIVOR-*merged* VCF (documented, see
+# Sniffles issue #318 -- it works only on single-sample Sniffles VCFs). cuteFC
+# is designed to force-call an arbitrary target VCF, so it genotypes our
+# existing high-confidence multi-caller catalog as-is.
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# Prep: normalise the merged catalog into a clean force-call template.
-# SURVIVOR's merged VCF carries per-caller FORMAT fields and can trip Sniffles'
-# --genotype-vcf reader; sort + strip to a minimal sites-only VCF first.
+# Prep: normalise the merged catalog into a clean force-call target VCF.
+# Strip to sites-only + sort so the target is unambiguous for cuteFC.
 # ---------------------------------------------------------------------------
 rule sv_gt_template:
     input:
         catalog=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
         reference=ALIGN_CONSPEC,
     output:
-        # PLAIN (uncompressed) VCF on purpose: Sniffles 2.8.0 --genotype-vcf
-        # cannot read a bgzipped template (it line-parses the file and errors
-        # with "'VariantRecord' object has no attribute 'strip'" on a .vcf.gz).
         template=SV_OUTDIR / "genotyping/catalog_template.vcf",
     conda:
         "../envs/sv_calling.yaml"
@@ -458,6 +460,8 @@ rule sv_gt_template:
 
 # ---------------------------------------------------------------------------
 # Per-sample: force-genotype the catalog against this sample's read alignments
+# cuteFC usage: cuteFC <sorted.bam> <reference.fa> <output.vcf> <work_dir>
+#               -Ivcf <target.vcf> --genotype
 # ---------------------------------------------------------------------------
 rule sv_genotype_sample:
     input:
@@ -477,21 +481,26 @@ rule sv_genotype_sample:
         mem_mb=8000,
         cpus=SV_THREADS,
     params:
+        min_sv_size=SV_MIN_SIZE,
         plain=lambda wc: str(SV_OUTDIR / f"genotyping/per_sample/{wc.sample}.regenotyped.vcf"),
+        workdir=lambda wc: str(SV_OUTDIR / f"genotyping/per_sample/{wc.sample}_cutefc_tmp"),
+        preset=lambda wc: "--max_cluster_bias_INS 100 --diff_ratio_merging_INS 0.3 --max_cluster_bias_DEL 100 --diff_ratio_merging_DEL 0.3" if PLATFORM_MAP.get(wc.sample, "") == "ONT" else "--max_cluster_bias_INS 1000 --diff_ratio_merging_INS 0.9 --max_cluster_bias_DEL 1000 --diff_ratio_merging_DEL 0.5",
     shell:
         r"""
         set -euo pipefail
-        # Sniffles writes to a plain .vcf; we bgzip+index ourselves so the
-        # compression is unambiguous regardless of how this Sniffles build
-        # interprets a .gz output extension.
-        sniffles \
-            --input {input.bam} \
-            --reference {input.reference} \
-            --genotype-vcf {input.template} \
-            --vcf {params.plain} \
+        mkdir -p {params.workdir}
+        cuteFC \
+            {input.bam} \
+            {input.reference} \
+            {params.plain} \
+            {params.workdir} \
+            -Ivcf {input.template} \
+            --genotype \
             --threads {threads} \
-            --sample-id {wildcards.sample} \
-            --allow-overwrite
+            --min_size {params.min_sv_size} \
+            {params.preset} \
+            --sample {wildcards.sample}
+        rm -rf {params.workdir}
         bgzip -f {params.plain}
         tabix -p vcf {output.vcf}
         """

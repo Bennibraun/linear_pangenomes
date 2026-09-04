@@ -12,6 +12,7 @@ dependencies:
   - htslib  # tabix/bgzip for re-genotyping rules
   - sniffles
   - cutesv
+  - cutefc  # force-calling/re-genotyping an existing SV VCF from reads
   - survivor
   - jasminesv
   - cd-hit
