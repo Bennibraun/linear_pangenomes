@@ -408,3 +408,128 @@ rule sv_sharing_summary:
         samples=LONG_SAMPLES,
     script:
         "../scripts/sv_sharing_summary.py"
+
+
+# ===========================================================================
+# Read-based re-genotyping of the pan-sample catalog
+# ===========================================================================
+# The SURVIVOR/Jasmine catalog records presence as SUPP_VEC, which is derived
+# from each sample's *assembly*-based callset. That confounds "absent" with
+# "this sample's assembly missed it" -- a real problem for private/shared SV
+# analysis, because a low-coverage assembly produces spurious absences.
+#
+# These rules force-call every catalog SV against each sample's aligned READS
+# with cuteFC (the force-calling/re-genotyping tool spun out of cuteSV), then
+# merge into one multi-sample VCF with a real GT + supporting-read depth (DR/DV)
+# per sample. Downstream P/A analysis then reads genotypes, and low-confidence
+# calls become honest missing (./.) rather than false absences.
+#
+# Why cuteFC and not Sniffles --genotype-vcf: Sniffles' force-caller silently
+# returns an EMPTY callset when handed a SURVIVOR-*merged* VCF (documented, see
+# Sniffles issue #318 -- it works only on single-sample Sniffles VCFs). cuteFC
+# is designed to force-call an arbitrary target VCF, so it genotypes our
+# existing high-confidence multi-caller catalog as-is.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Prep: normalise the merged catalog into a clean force-call target VCF.
+# Strip to sites-only + sort so the target is unambiguous for cuteFC.
+# ---------------------------------------------------------------------------
+rule sv_gt_template:
+    input:
+        catalog=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.survivor.vcf",
+        reference=ALIGN_CONSPEC,
+    output:
+        template=SV_OUTDIR / "genotyping/catalog_template.vcf",
+    conda:
+        "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=30,
+        mem_mb=4000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        # sites-only (drop sample columns), sort, write uncompressed VCF
+        bcftools view --drop-genotypes {input.catalog} \
+            | bcftools sort -Ov -o {output.template}
+        """
+
+
+# ---------------------------------------------------------------------------
+# Per-sample: force-genotype the catalog against this sample's read alignments
+# cuteFC usage: cuteFC <sorted.bam> <reference.fa> <output.vcf> <work_dir>
+#               -Ivcf <target.vcf> --genotype
+# ---------------------------------------------------------------------------
+rule sv_genotype_sample:
+    input:
+        bam=SV_OUTDIR / "read_alignments/{sample}.sorted.bam",
+        bai=SV_OUTDIR / "read_alignments/{sample}.sorted.bam.bai",
+        template=SV_OUTDIR / "genotyping/catalog_template.vcf",
+        reference=ALIGN_CONSPEC,
+    output:
+        vcf=SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz",
+        tbi=SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz.tbi",
+    conda:
+        "../envs/sv_calling.yaml"
+    threads: SV_THREADS
+    resources:
+        slurm_partition="short",
+        runtime=120,
+        mem_mb=8000,
+        cpus=SV_THREADS,
+    params:
+        min_sv_size=SV_MIN_SIZE,
+        plain=lambda wc: str(SV_OUTDIR / f"genotyping/per_sample/{wc.sample}.regenotyped.vcf"),
+        workdir=lambda wc: str(SV_OUTDIR / f"genotyping/per_sample/{wc.sample}_cutefc_tmp"),
+        preset=lambda wc: "--max_cluster_bias_INS 100 --diff_ratio_merging_INS 0.3 --max_cluster_bias_DEL 100 --diff_ratio_merging_DEL 0.3" if PLATFORM_MAP.get(wc.sample, "") == "ONT" else "--max_cluster_bias_INS 1000 --diff_ratio_merging_INS 0.9 --max_cluster_bias_DEL 1000 --diff_ratio_merging_DEL 0.5",
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p {params.workdir}
+        cuteFC \
+            {input.bam} \
+            {input.reference} \
+            {params.plain} \
+            {params.workdir} \
+            -Ivcf {input.template} \
+            --genotype \
+            --threads {threads} \
+            --min_size {params.min_sv_size} \
+            {params.preset} \
+            --sample {wildcards.sample}
+        rm -rf {params.workdir}
+        bgzip -f {params.plain}
+        tabix -p vcf {output.vcf}
+        """
+
+
+# ---------------------------------------------------------------------------
+# Pan-sample: merge per-sample re-genotyped VCFs into one multi-sample VCF
+# ---------------------------------------------------------------------------
+rule sv_genotype_merge:
+    input:
+        vcfs=expand(
+            SV_OUTDIR / "genotyping/per_sample/{sample}.regenotyped.vcf.gz",
+            sample=LONG_SAMPLES,
+        ),
+    output:
+        vcf=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.regenotyped.vcf.gz",
+        tbi=SV_OUTDIR / "pan_sample_catalog/pan_sample_catalog.regenotyped.vcf.gz.tbi",
+    conda:
+        "../envs/sv_calling.yaml"
+    resources:
+        slurm_partition="short",
+        runtime=60,
+        mem_mb=8000,
+        cpus=1,
+    shell:
+        r"""
+        set -euo pipefail
+        # force-genotyped per-sample VCFs share identical sites, so a straight
+        # merge lines them up column-by-column into one multi-sample matrix
+        bcftools merge --force-samples -m none -Oz -o {output.vcf} {input.vcfs}
+        tabix -p vcf {output.vcf}
+        """
