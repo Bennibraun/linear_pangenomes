@@ -99,7 +99,7 @@ rule angsd_saf_per_pop:
         mkdir -p $(dirname {params.prefix})
         printf '%s\n' {input.bams} > {output.bamlist}
         angsd -bam {output.bamlist} \
-            -ref {input.ref} -anc {input.ref} -fold 1 \
+            -ref {input.ref} -anc {input.ref} \
             -rf {input.rf} \
             {params.filters} \
             -doSaf 1 \
@@ -157,7 +157,7 @@ rule angsd_thetas_per_pop:
         realSFS saf2theta {input.saf} -sfs {input.sfs} -fold 1 \
             -P {threads} -outnames {params.prefix}
         # Genome-wide (single-window) theta summary: pi, Watterson, Tajima's D.
-        # thetaStat writes to <input>.pestPG (i.e. {prefix}.thetas.idx.pestPG);
+        # thetaStat writes to <input>.pestPG (i.e. {params.prefix}.thetas.idx.pestPG);
         # rename to the declared output so the rule is self-consistent.
         thetaStat do_stat {params.prefix}.thetas.idx
         mv {params.prefix}.thetas.idx.pestPG {output.pestPG}
@@ -346,7 +346,7 @@ rule angsd_core_saf_per_pop:
         mkdir -p $(dirname {params.prefix})
         printf '%s\n' {input.bams} > {output.bamlist}
         angsd -bam {output.bamlist} \
-            -ref {input.ref} -anc {input.ref} -fold 1 \
+            -ref {input.ref} -anc {input.ref} \
             -rf {input.rf} \
             {params.filters} {params.downsample} \
             -doSaf 1 \

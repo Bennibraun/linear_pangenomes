@@ -93,6 +93,38 @@ def get_ref_fasta(name):
     return REFS_NESTED[name]["fasta"]
 
 # ============================================================================
+# Auto-bind external data directories into apptainer/singularity containers
+# ============================================================================
+# --use-singularity only auto-mounts the working directory into the container,
+# so any input living outside it (reference FASTAs, raw reads under
+# /data/ben/cavefish_data, etc.) is invisible inside container rules unless
+# explicitly bound. Rather than requiring every invocation to pass
+# --singularity-args/--bind by hand, collect the parent directories of every
+# absolute external path referenced by the manifest/config and export them via
+# APPTAINER_BINDPATH / SINGULARITY_BINDPATH, which apptainer and singularity
+# both read automatically on every container invocation.
+_workdir = str(Path.cwd().resolve())
+_external_paths = (
+    manifest_df["fastq_r1"].dropna().tolist()
+    + manifest_df["fastq_r2"].dropna().tolist()
+    + [ALIGN_AUGREF, ALIGN_CONSPEC, ALIGN_HETSPEC]
+)
+_bind_dirs = set()
+for _p in _external_paths:
+    _p = str(_p).strip()
+    if not _p or not os.path.isabs(_p):
+        continue
+    _parent = str(Path(_p).resolve().parent)
+    if _parent != _workdir and not _parent.startswith(_workdir + os.sep):
+        _bind_dirs.add(_parent)
+
+if _bind_dirs:
+    _bind_str = ",".join(sorted(_bind_dirs))
+    for _v in ("APPTAINER_BINDPATH", "SINGULARITY_BINDPATH"):
+        _existing = os.environ.get(_v)
+        os.environ[_v] = f"{_existing},{_bind_str}" if _existing else _bind_str
+
+# ============================================================================
 # Population pairs for FST/AFS analysis
 # ============================================================================
 POP_PAIRS = config["population_pairs"]
@@ -663,10 +695,35 @@ rule sv_dedup_sequences:
         r"""
         set -euo pipefail
         cat {input.sv_seqs} {input.unmapped} > {output.pooled}
+
+        # cd-hit-est's default build has a compiled-in MAX_SEQ length limit
+        # (~1,000,000bp) and silently corrupts memory (SIGSEGV, even with
+        # -T 1) on any sequence past it, despite its own "not fatal" warning.
+        # Some unmapped assembly contigs exceed this. Route those around
+        # cd-hit-est untouched -- at that length nothing else in the pool is
+        # close enough to be a 95%-identity duplicate anyway -- and only
+        # cluster the rest.
+        pooled_ok={output.pooled}.under_limit.fasta
+        pooled_long={output.pooled}.over_limit.fasta
+        awk -v ok="$pooled_ok" -v long="$pooled_long" '
+            BEGIN {{ RS=">"; ORS="" }}
+            NR>1 {{
+                nl = index($0, "\n")
+                hdr = substr($0, 1, nl-1)
+                seq = substr($0, nl+1)
+                gsub(/\n/, "", seq)
+                out = (length(seq) >= 999000) ? long : ok
+                print ">" hdr "\n" seq "\n" > out
+            }}
+        ' {output.pooled}
+        touch "$pooled_ok" "$pooled_long"
+
         # -M 0: no memory cap (the pooled accessory -- SV inserts + unmapped
         # assembly segments -- is larger than the old SV-only input and can
         # exceed cd-hit's 800 MB default). -T for the allotted cores.
-        cd-hit-est -i {output.pooled} -o {output.fasta} -c 0.95 -n 10 -M 0 -T {threads}
+        cd-hit-est -i "$pooled_ok" -o {output.fasta} -c 0.95 -n 10 -M 0 -T {threads}
+        cat "$pooled_long" >> {output.fasta}
+        rm -f "$pooled_ok" "$pooled_long"
         """
 
 rule sv_build_augmented_reference:
@@ -951,7 +1008,7 @@ rule align_bwa_conspec:
     resources:
         slurm_partition="long",
         runtime=1440,
-        mem_mb=32000,
+        mem_mb=8000,
         cpus=ALIGN_THREADS
     shell:
         r"""
