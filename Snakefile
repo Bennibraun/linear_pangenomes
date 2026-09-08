@@ -174,6 +174,19 @@ if FST_WINDOW_SIZE and FST_WINDOW_STEP:
     FST_WINDOW_ARGS = f"--fst-window-size {FST_WINDOW_SIZE} --fst-window-step {FST_WINDOW_STEP}"
 elif FST_WINDOW_SIZE:
     FST_WINDOW_ARGS = f"--fst-window-size {FST_WINDOW_SIZE}"
+
+# Site filtering applied BEFORE Weir & Cockerham FST. Without it, singletons,
+# near-monomorphic and high-missing sites (especially low-depth SV_* accessory
+# contigs with single-read genotypes) return per-site FST ~= 1.0 by construction,
+# producing a spurious wall at FST=1 that swamps the real signal. Filter to
+# biallelic, MAF>=floor, adequately-genotyped sites first. Thresholds are config-
+# driven so they can be relaxed for very small cohorts.
+FST_MIN_MAF = FST_CFG.get("min_maf", 0.05)
+FST_MAX_MISSING = FST_CFG.get("max_missing", 0.8)  # vcftools: fraction PRESENT
+FST_FILTER_ARGS = (
+    f"--min-alleles 2 --max-alleles 2 "
+    f"--maf {FST_MIN_MAF} --max-missing {FST_MAX_MISSING}"
+)
 AFS_BINS = FST_CFG.get("afs_bins", [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5])
 
 PI_CFG = config["pi"]

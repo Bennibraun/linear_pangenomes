@@ -126,6 +126,18 @@ variant_calling:
 
 fst_afs:
   outdir: "results/fst_afs"
+  # Site filtering applied before Weir & Cockerham FST. Prevents the spurious
+  # FST=1.0 wall from singletons / near-monomorphic / high-missing sites (worst
+  # on low-depth SV_* accessory contigs). Relax min_maf for very small cohorts.
+  min_maf: 0.05        # drop sites with minor-allele freq below this
+  max_missing: 0.8     # require >=80% of samples genotyped (vcftools convention)
+  # Kept per-site (window 0): the combined FST output also carries the short
+  # SV_* accessory contigs, which are far smaller than any sensible window, so
+  # windowing would silently drop the accessory side panel. The site filter
+  # above (min_maf / max_missing) is what removes the FST=1.0 wall; per-site is
+  # stable once low-freq/low-coverage sites are excluded. If you want a windowed
+  # chromosome scan too, add a SEPARATE windowed rule rather than windowing this
+  # one, so the accessory panel survives.
   window_size: 0
   window_step: 0
   afs_bins: [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]

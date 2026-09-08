@@ -174,6 +174,7 @@ rule fst_mc_graph_by_variant_pair:
         vclass="sv|snp",
     params:
         window_args=FST_WINDOW_ARGS,
+        filter_args=FST_FILTER_ARGS,
         min_sv=SV_MIN_SIZE,
         pop1_samples=lambda w: " ".join(POP_SAMPLES[w.pop1]),
         pop2_samples=lambda w: " ".join(POP_SAMPLES[w.pop2]),
@@ -206,6 +207,7 @@ rule fst_mc_graph_by_variant_pair:
 
         vcftools --vcf "$sub" \
             --weir-fst-pop "$pop1_tmp" --weir-fst-pop "$pop2_tmp" \
+            {params.filter_args} \
             {params.window_args} --out "$prefix" > /dev/null 2>&1 || true
         if [ ! -f "${{prefix}}.weir.fst" ]; then
             printf 'CHROM\tPOS\tWEIR_AND_COCKERHAM_FST\n' > "${{prefix}}.weir.fst"

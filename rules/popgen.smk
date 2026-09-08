@@ -77,6 +77,7 @@ rule fst_per_ref_pair:
         "../envs/fst_afs.yaml"
     params:
         window_args=FST_WINDOW_ARGS,
+        filter_args=FST_FILTER_ARGS,
         pop1_samples=lambda wildcards: " ".join(POP_SAMPLES[wildcards.pop1]),
         pop2_samples=lambda wildcards: " ".join(POP_SAMPLES[wildcards.pop2])
     resources:
@@ -97,9 +98,12 @@ rule fst_per_ref_pair:
         for s in {params.pop1_samples}; do echo "$s"; done > "$pop1_tmp"
         for s in {params.pop2_samples}; do echo "$s"; done > "$pop2_tmp"
 
+        # Filter sites (biallelic, MAF, missingness) BEFORE FST -- without this,
+        # low-frequency/low-coverage sites inflate per-site FST to ~1.0.
         vcftools --gzvcf {input.vcf} \
           --weir-fst-pop "$pop1_tmp" \
           --weir-fst-pop "$pop2_tmp" \
+          {params.filter_args} \
           {params.window_args} \
           --out $prefix > /dev/null
         """
